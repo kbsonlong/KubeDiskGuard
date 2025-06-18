@@ -32,6 +32,9 @@ func TestShouldSkip(t *testing.T) {
 		image         string
 		containerName string
 		keywords      []string
+		namespaces    []string
+		regexps       []string
+		labelSelector string
 		expected      bool
 	}{
 		{
@@ -39,6 +42,9 @@ func TestShouldSkip(t *testing.T) {
 			image:         "k8s.gcr.io/pause:3.2",
 			containerName: "k8s_POD_test-pod",
 			keywords:      []string{"pause"},
+			namespaces:    nil,
+			regexps:       nil,
+			labelSelector: "",
 			expected:      true,
 		},
 		{
@@ -46,6 +52,9 @@ func TestShouldSkip(t *testing.T) {
 			image:         "nginx:latest",
 			containerName: "nginx-container",
 			keywords:      []string{"pause", "istio-proxy"},
+			namespaces:    nil,
+			regexps:       nil,
+			labelSelector: "",
 			expected:      false,
 		},
 		{
@@ -53,6 +62,39 @@ func TestShouldSkip(t *testing.T) {
 			image:         "docker.io/istio/proxyv2:1.12.0",
 			containerName: "istio-proxy",
 			keywords:      []string{"pause", "istio-proxy"},
+			namespaces:    nil,
+			regexps:       nil,
+			labelSelector: "",
+			expected:      true,
+		},
+		{
+			name:          "should skip by namespace",
+			image:         "nginx:latest",
+			containerName: "nginx-container",
+			keywords:      nil,
+			namespaces:    []string{"kube-system"},
+			regexps:       nil,
+			labelSelector: "",
+			expected:      true,
+		},
+		{
+			name:          "should skip by regexp",
+			image:         "istio-proxy:latest",
+			containerName: "istio-proxy",
+			keywords:      nil,
+			namespaces:    nil,
+			regexps:       []string{"^istio-.*$"},
+			labelSelector: "",
+			expected:      true,
+		},
+		{
+			name:          "should skip by labelSelector",
+			image:         "nginx:latest",
+			containerName: "nginx-container",
+			keywords:      nil,
+			namespaces:    nil,
+			regexps:       nil,
+			labelSelector: "app=nginx",
 			expected:      true,
 		},
 	}
@@ -60,10 +102,11 @@ func TestShouldSkip(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			containerInfo := &container.ContainerInfo{
-				Image: tt.image,
-				Name:  tt.containerName,
+				Image:       tt.image,
+				Name:        tt.containerName,
+				Annotations: map[string]string{"app": "nginx", "io.kubernetes.pod.namespace": "kube-system"},
 			}
-			result := container.ShouldSkip(containerInfo, tt.keywords)
+			result := container.ShouldSkip(containerInfo, tt.keywords, tt.namespaces, tt.regexps, tt.labelSelector)
 			if result != tt.expected {
 				t.Errorf("shouldSkip() = %v, want %v", result, tt.expected)
 			}
@@ -108,7 +151,7 @@ func BenchmarkShouldSkip(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		container.ShouldSkip(containerInfo, keywords)
+		container.ShouldSkip(containerInfo, keywords, nil, nil, "")
 	}
 }
 
@@ -156,4 +199,76 @@ func TestEventListening(t *testing.T) {
 	}
 
 	t.Log("Event listening test completed")
+}
+
+func TestParseIopsLimitFromAnnotations(t *testing.T) {
+	defaultLimit := 500
+	cases := []struct {
+		name   string
+		ann    map[string]string
+		expect int
+	}{
+		{"no annotation", map[string]string{}, 500},
+		{"valid annotation", map[string]string{"iops-limit/limit": "1000"}, 1000},
+		{"invalid annotation", map[string]string{"iops-limit/limit": "abc"}, 500},
+		{"zero annotation", map[string]string{"iops-limit/limit": "0"}, 500},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := service.ParseIopsLimitFromAnnotations(c.ann, defaultLimit)
+			if got != c.expect {
+				t.Errorf("parseIopsLimitFromAnnotations() = %d, want %d", got, c.expect)
+			}
+		})
+	}
+}
+
+type fakeRuntime struct {
+	containers []*container.ContainerInfo
+}
+
+func (f *fakeRuntime) GetContainers() ([]*container.ContainerInfo, error)           { return f.containers, nil }
+func (f *fakeRuntime) GetContainerByID(id string) (*container.ContainerInfo, error) { return nil, nil }
+func (f *fakeRuntime) ProcessContainer(c *container.ContainerInfo) error            { return nil }
+func (f *fakeRuntime) Close() error                                                 { return nil }
+func (f *fakeRuntime) GetContainersByPod(ns, name string) ([]*container.ContainerInfo, error) {
+	var result []*container.ContainerInfo
+	for _, c := range f.containers {
+		if c.Annotations["io.kubernetes.pod.namespace"] == ns && c.Annotations["io.kubernetes.pod.name"] == name {
+			result = append(result, c)
+		}
+	}
+	return result, nil
+}
+func (f *fakeRuntime) SetIOPSLimit(c *container.ContainerInfo, i int) error {
+	c.Name = "set"
+	return nil
+}
+
+func TestGetContainersByPod(t *testing.T) {
+	containers := []*container.ContainerInfo{
+		{ID: "1", Annotations: map[string]string{"io.kubernetes.pod.namespace": "default", "io.kubernetes.pod.name": "nginx"}},
+		{ID: "2", Annotations: map[string]string{"io.kubernetes.pod.namespace": "kube-system", "io.kubernetes.pod.name": "coredns"}},
+		{ID: "3", Annotations: map[string]string{"io.kubernetes.pod.namespace": "default", "io.kubernetes.pod.name": "nginx"}},
+	}
+	rt := &fakeRuntime{containers: containers}
+	found, err := rt.GetContainersByPod("default", "nginx")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(found) != 2 {
+		t.Errorf("expected 2 containers, got %d", len(found))
+	}
+}
+
+func TestSetIOPSLimit(t *testing.T) {
+	ci := &container.ContainerInfo{ID: "1", Name: "test"}
+	rt := &fakeRuntime{}
+	err := rt.SetIOPSLimit(ci, 1000)
+	if err != nil {
+		t.Errorf("SetIOPSLimit error: %v", err)
+	}
+	if ci.Name != "set" {
+		t.Errorf("SetIOPSLimit did not set name as expected")
+	}
 }

@@ -4,13 +4,10 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"time"
+	"strings"
 
 	"github.com/containerd/containerd"
-	containerdevents "github.com/containerd/containerd/api/events"
 	"github.com/containerd/containerd/namespaces"
-	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/types/known/anypb"
 
 	"iops-limit-service/pkg/cgroup"
 	"iops-limit-service/pkg/config"
@@ -64,7 +61,7 @@ func (c *ContainerdRuntime) GetContainers() ([]*container.ContainerInfo, error) 
 			continue
 		}
 
-		if !container.ShouldSkip(containerInfo, c.config.ExcludeKeywords) {
+		if !container.ShouldSkip(containerInfo, c.config.ExcludeKeywords, c.config.ExcludeNamespaces, c.config.ExcludeRegexps, c.config.ExcludeLabelSelector) {
 			containerInfos = append(containerInfos, containerInfo)
 		}
 	}
@@ -92,8 +89,9 @@ func (c *ContainerdRuntime) getContainerInfo(ctx context.Context, cont container
 	}
 
 	containerInfo := &container.ContainerInfo{
-		ID:   cont.ID(),
-		Name: info.Labels["io.kubernetes.container.name"],
+		ID:          cont.ID(),
+		Name:        info.Labels["io.kubernetes.container.name"],
+		Annotations: map[string]string{},
 	}
 
 	// 获取镜像信息
@@ -106,58 +104,14 @@ func (c *ContainerdRuntime) getContainerInfo(ctx context.Context, cont container
 		}
 	}
 
-	return containerInfo, nil
-}
-
-// WatchContainerEvents 监听容器事件
-func (c *ContainerdRuntime) WatchContainerEvents() error {
-	ctx := namespaces.WithNamespace(context.Background(), c.config.ContainerdNamespace)
-
-	// 获取事件服务
-	eventService := c.client.EventService()
-
-	// 创建事件订阅（Go SDK返回的是channel）
-	eventsCh, errCh := eventService.Subscribe(ctx, "type==\"task\"")
-
-	log.Println("Started watching containerd task events...")
-
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case envelope := <-eventsCh:
-			if envelope == nil || envelope.Event == nil {
-				continue
-			}
-			// 监听任务启动事件
-			if any, ok := envelope.Event.(*anypb.Any); ok && any.TypeUrl == "containerd.events.TaskStart" {
-				startEvt := &containerdevents.TaskStart{}
-				if err := proto.Unmarshal(any.Value, startEvt); err == nil {
-					containerID := startEvt.ContainerID
-					if containerID != "" {
-						// 等待一小段时间确保容器完全启动
-						time.Sleep(2 * time.Second)
-
-						containerInfo, err := c.GetContainerByID(containerID)
-						if err != nil {
-							log.Printf("Failed to get container info for %s: %v", containerID, err)
-							continue
-						}
-						if !container.ShouldSkip(containerInfo, c.config.ExcludeKeywords) {
-							log.Printf("Container started: %s (%s)", containerInfo.ID, containerInfo.Name)
-							c.ProcessContainer(containerInfo)
-						}
-					}
-				}
-				continue
-			}
-		case err := <-errCh:
-			if err != nil {
-				log.Printf("Error from event channel: %v", err)
-				return err
-			}
+	// 获取注解信息
+	for k, v := range info.Labels {
+		if strings.HasPrefix(k, "annotation.") {
+			containerInfo.Annotations[k] = v
 		}
 	}
+
+	return containerInfo, nil
 }
 
 // ProcessContainer 处理容器
@@ -177,4 +131,31 @@ func (c *ContainerdRuntime) ProcessContainer(container *container.ContainerInfo)
 
 	log.Printf("Successfully set IOPS limit for container %s: %s %d", container.Name, majMin, c.config.ContainerIOPSLimit)
 	return nil
+}
+
+// GetContainersByPod 通过Pod信息查找本地容器
+func (c *ContainerdRuntime) GetContainersByPod(namespace, podName string) ([]*container.ContainerInfo, error) {
+	containers, err := c.GetContainers()
+	if err != nil {
+		return nil, err
+	}
+	var result []*container.ContainerInfo
+	for _, cont := range containers {
+		if ns, ok := cont.Annotations["io.kubernetes.pod.namespace"]; ok && ns == namespace {
+			if pn, ok := cont.Annotations["io.kubernetes.pod.name"]; ok && pn == podName {
+				result = append(result, cont)
+			}
+		}
+	}
+	return result, nil
+}
+
+// SetIOPSLimit 动态设置IOPS限制
+func (c *ContainerdRuntime) SetIOPSLimit(container *container.ContainerInfo, iopsLimit int) error {
+	majMin, err := device.GetMajMin(c.config.DataMount)
+	if err != nil {
+		return err
+	}
+	cgroupPath := c.cgroup.FindCgroupPath(container.ID)
+	return c.cgroup.SetIOPSLimit(cgroupPath, majMin, iopsLimit)
 }

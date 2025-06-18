@@ -9,29 +9,35 @@ import (
 
 // Config 配置结构体
 type Config struct {
-	ContainerIOPSLimit  int      `json:"container_iops_limit"`
-	DataTotalIOPS       int      `json:"data_total_iops"`
-	DataMount           string   `json:"data_mount"`
-	ExcludeKeywords     []string `json:"exclude_keywords"`
-	ContainerdNamespace string   `json:"containerd_namespace"`
-	ContainerRuntime    string   `json:"container_runtime"`
-	CgroupVersion       string   `json:"cgroup_version"`
-	CheckInterval       int      `json:"check_interval"`
-	ContainerSocketPath   string   `json:"container_socket_path,omitempty"` // 可选字段，默认为空
+	ContainerIOPSLimit   int      `json:"container_iops_limit"`
+	DataTotalIOPS        int      `json:"data_total_iops"`
+	DataMount            string   `json:"data_mount"`
+	ExcludeKeywords      []string `json:"exclude_keywords"`
+	ExcludeNamespaces    []string `json:"exclude_namespaces"`
+	ExcludeRegexps       []string `json:"exclude_regexps"`
+	ExcludeLabelSelector string   `json:"exclude_label_selector"`
+	ContainerdNamespace  string   `json:"containerd_namespace"`
+	ContainerRuntime     string   `json:"container_runtime"`
+	CgroupVersion        string   `json:"cgroup_version"`
+	CheckInterval        int      `json:"check_interval"`
+	ContainerSocketPath  string   `json:"container_socket_path,omitempty"` // 可选字段，默认为空
 }
 
 // GetDefaultConfig 获取默认配置
 func GetDefaultConfig() *Config {
 	return &Config{
-		ContainerIOPSLimit:  500,
-		DataTotalIOPS:       3000,
-		DataMount:           "/data",
-		ExcludeKeywords:     []string{"pause", "istio-proxy", "psmdb", "kube-system", "koordinator", "apisix"},
-		ContainerdNamespace: "k8s.io",
-		ContainerRuntime:    "auto",
-		CgroupVersion:       "auto",
-		CheckInterval:       30,
-		ContainerSocketPath: "/run/containerd/containerd.sock",
+		ContainerIOPSLimit:   500,
+		DataTotalIOPS:        3000,
+		DataMount:            "/data",
+		ExcludeKeywords:      []string{"pause", "istio-proxy", "psmdb", "kube-system", "koordinator", "apisix"},
+		ExcludeNamespaces:    []string{"kube-system"},
+		ExcludeRegexps:       []string{},
+		ExcludeLabelSelector: "",
+		ContainerdNamespace:  "k8s.io",
+		ContainerRuntime:     "auto",
+		CgroupVersion:        "auto",
+		CheckInterval:        30,
+		ContainerSocketPath:  "/run/containerd/containerd.sock",
 	}
 }
 
@@ -55,6 +61,18 @@ func LoadFromEnv(config *Config) {
 
 	if val := os.Getenv("EXCLUDE_KEYWORDS"); val != "" {
 		config.ExcludeKeywords = strings.Split(val, ",")
+	}
+
+	if val := os.Getenv("EXCLUDE_NAMESPACES"); val != "" {
+		config.ExcludeNamespaces = strings.Split(val, ",")
+	}
+
+	if val := os.Getenv("EXCLUDE_REGEXPS"); val != "" {
+		config.ExcludeRegexps = strings.Split(val, ",")
+	}
+
+	if val := os.Getenv("EXCLUDE_LABEL_SELECTOR"); val != "" {
+		config.ExcludeLabelSelector = val
 	}
 
 	if val := os.Getenv("CONTAINERD_NAMESPACE"); val != "" {

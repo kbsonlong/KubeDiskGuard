@@ -3,13 +3,10 @@ package runtime
 import (
 	"context"
 	"fmt"
-	"io"
 	"log"
 	"strings"
-	"time"
 
 	"github.com/docker/docker/api/types"
-	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/client"
 
 	"iops-limit-service/pkg/cgroup"
@@ -59,9 +56,14 @@ func (d *DockerRuntime) GetContainers() ([]*container.ContainerInfo, error) {
 			Image:        info.Config.Image,
 			Name:         strings.TrimPrefix(info.Name, "/"),
 			CgroupParent: info.HostConfig.CgroupParent,
+			Annotations:  map[string]string{},
+		}
+		// 提取Labels到Annotations
+		for k, v := range info.Config.Labels {
+			ci.Annotations[k] = v
 		}
 
-		if !container.ShouldSkip(ci, d.config.ExcludeKeywords) {
+		if !container.ShouldSkip(ci, d.config.ExcludeKeywords, d.config.ExcludeNamespaces, d.config.ExcludeRegexps, d.config.ExcludeLabelSelector) {
 			containerInfos = append(containerInfos, ci)
 		}
 	}
@@ -76,50 +78,17 @@ func (d *DockerRuntime) GetContainerByID(containerID string) (*container.Contain
 		return nil, err
 	}
 
-	return &container.ContainerInfo{
+	ci := &container.ContainerInfo{
 		ID:           info.ID,
 		Image:        info.Config.Image,
 		Name:         strings.TrimPrefix(info.Name, "/"),
 		CgroupParent: info.HostConfig.CgroupParent,
-	}, nil
-}
-
-// WatchContainerEvents 监听容器事件
-func (d *DockerRuntime) WatchContainerEvents() error {
-	// 监听容器启动事件而不是创建事件
-	f := filters.NewArgs()
-	f.Add("type", "container")
-	f.Add("event", "start")
-	ctx := context.Background()
-	msgs, errs := d.client.Events(ctx, types.EventsOptions{Filters: f})
-
-	for {
-		select {
-		case event := <-msgs:
-			if event.Type == "container" && event.Action == "start" {
-				// 等待一小段时间确保容器完全启动
-				time.Sleep(2 * time.Second)
-
-				containerInfo, err := d.GetContainerByID(event.Actor.ID)
-				if err != nil {
-					log.Printf("Failed to get container info for %s: %v", event.Actor.ID, err)
-					continue
-				}
-				if !container.ShouldSkip(containerInfo, d.config.ExcludeKeywords) {
-					log.Printf("Container started: %s (%s)", containerInfo.ID, containerInfo.Name)
-					d.ProcessContainer(containerInfo)
-				}
-			}
-		case err := <-errs:
-			if err == io.EOF {
-				log.Println("Docker events stream ended, reconnecting...")
-				time.Sleep(5 * time.Second)
-				return d.WatchContainerEvents()
-			}
-			log.Printf("Docker events error: %v", err)
-			return err
-		}
+		Annotations:  map[string]string{},
 	}
+	for k, v := range info.Config.Labels {
+		ci.Annotations[k] = v
+	}
+	return ci, nil
 }
 
 // ProcessContainer 处理容器
@@ -147,4 +116,31 @@ func (d *DockerRuntime) Close() error {
 		return d.client.Close()
 	}
 	return nil
+}
+
+// GetContainersByPod 通过Pod信息查找本地容器
+func (d *DockerRuntime) GetContainersByPod(namespace, podName string) ([]*container.ContainerInfo, error) {
+	containers, err := d.GetContainers()
+	if err != nil {
+		return nil, err
+	}
+	var result []*container.ContainerInfo
+	for _, c := range containers {
+		if ns, ok := c.Annotations["io.kubernetes.pod.namespace"]; ok && ns == namespace {
+			if pn, ok := c.Annotations["io.kubernetes.pod.name"]; ok && pn == podName {
+				result = append(result, c)
+			}
+		}
+	}
+	return result, nil
+}
+
+// SetIOPSLimit 动态设置IOPS限制
+func (d *DockerRuntime) SetIOPSLimit(container *container.ContainerInfo, iopsLimit int) error {
+	majMin, err := device.GetMajMin(d.config.DataMount)
+	if err != nil {
+		return err
+	}
+	cgroupPath := d.cgroup.BuildCgroupPath(container.ID, container.CgroupParent)
+	return d.cgroup.SetIOPSLimit(cgroupPath, majMin, iopsLimit)
 }
