@@ -1,0 +1,61 @@
+# 二进制文件
+iops-limit-service
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# 测试二进制文件
+*.test
+
+# 覆盖率文件
+*.out
+
+# Go 工作区文件
+go.work
+
+# IDE 文件
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS 生成文件
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# 日志文件
+*.log
+
+# 临时文件
+*.tmp
+*.temp
+
+# 构建目录
+build/
+dist/
+
+# 依赖目录
+vendor/
+
+# 环境文件
+.env
+.env.local
+.env.*.local
+
+# Docker 相关
+.dockerignore
+
+# Kubernetes 相关
+*.kubeconfig
+
+# 备份文件
+*.bak
+*.backup 

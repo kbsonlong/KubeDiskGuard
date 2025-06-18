@@ -1,0 +1,130 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: iops-limit-service
+  namespace: kube-system
+  labels:
+    app: iops-limit-service
+spec:
+  selector:
+    matchLabels:
+      app: iops-limit-service
+  template:
+    metadata:
+      labels:
+        app: iops-limit-service
+    spec:
+      hostPID: true
+      containers:
+      - name: iops-limit-service
+        image: your-registry/iops-limit-service:latest
+        imagePullPolicy: Always
+        securityContext:
+          privileged: true
+          runAsUser: 0
+          runAsGroup: 0
+        env:
+        - name: CONTAINER_IOPS_LIMIT
+          value: "500"
+        - name: DATA_TOTAL_IOPS
+          value: "3000"
+        - name: DATA_MOUNT
+          value: "/data"
+        - name: EXCLUDE_KEYWORDS
+          value: "pause,istio-proxy,psmdb,kube-system,koordinator,apisix"
+        - name: CONTAINERD_NAMESPACE
+          value: "k8s.io"
+        - name: CONTAINER_RUNTIME
+          value: "auto"
+        - name: CGROUP_VERSION
+          value: "auto"
+        - name: CHECK_INTERVAL
+          value: "30"
+        volumeMounts:
+        - name: cgroup
+          mountPath: /sys/fs/cgroup
+        - name: docker-socket
+          mountPath: /var/run/docker.sock
+        - name: containerd-socket
+          mountPath: /run/containerd/containerd.sock
+        - name: proc
+          mountPath: /proc
+        - name: dev
+          mountPath: /dev
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "100m"
+        livenessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - "ps aux | grep iops-limit-service | grep -v grep"
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - "test -f /proc/1/root/app/iops-limit-service"
+          initialDelaySeconds: 5
+          periodSeconds: 5
+      volumes:
+      - name: cgroup
+        hostPath:
+          path: /sys/fs/cgroup
+      - name: docker-socket
+        hostPath:
+          path: /var/run/docker.sock
+      - name: containerd-socket
+        hostPath:
+          path: /run/containerd/containerd.sock
+      - name: proc
+        hostPath:
+          path: /proc
+      - name: dev
+        hostPath:
+          path: /dev
+      tolerations:
+      - key: node-role.kubernetes.io/master
+        operator: Exists
+        effect: NoSchedule
+      - key: node-role.kubernetes.io/control-plane
+        operator: Exists
+        effect: NoSchedule
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: iops-limit-service
+  namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: iops-limit-service
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["nodes"]
+  verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: iops-limit-service
+subjects:
+- kind: ServiceAccount
+  name: iops-limit-service
+  namespace: kube-system
+roleRef:
+  kind: ClusterRole
+  name: iops-limit-service
+  apiGroup: rbac.authorization.k8s.io 
