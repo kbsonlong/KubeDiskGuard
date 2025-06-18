@@ -6,9 +6,20 @@
 
 - **自动检测容器运行时**：支持 Docker 和 containerd
 - **自动检测 cgroup 版本**：支持 cgroup v1 和 v2
-- **实时事件监听**：监听容器创建事件，自动为新容器设置 IOPS 限制
+- **实时事件监听**：监听容器启动事件，自动为新容器设置 IOPS 限制
 - **智能过滤**：自动过滤系统容器（如 pause、istio-proxy 等）
 - **配置灵活**：支持环境变量配置所有参数
+- **稳定的事件处理**：使用容器启动事件而非创建事件，确保容器完全初始化后再设置限制
+
+## 最近更新
+
+### 事件监听改进 (v1.1.0)
+
+- **问题修复**：将事件监听从容器创建事件改为容器启动事件，解决容器创建时可能未完全初始化的问题
+- **稳定性提升**：添加2秒延迟确保容器完全启动后再进行IOPS限制设置
+- **兼容性增强**：支持Docker和containerd的不同事件类型
+
+详细改进说明请参考：[事件监听改进说明](docs/EVENT_LISTENING_IMPROVEMENTS.md)
 
 ## 环境要求
 
@@ -78,8 +89,9 @@ kubectl logs -n kube-system -l app=iops-limit-service -f
 - **cgroup v2**：写入 `io.max` 文件
 
 ### 4. 事件监听
-- **Docker**：使用 Docker API 监听容器创建事件
-- **containerd**：使用 `ctr events` 监听容器创建事件
+- **Docker**：使用 Docker API 监听容器启动事件（`event=start`）
+- **containerd**：使用 containerd API 监听任务启动事件（`TaskStart`）
+- **延迟处理**：检测到启动事件后等待2秒，确保容器完全初始化后再设置IOPS限制
 
 ## 本地开发
 

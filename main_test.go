@@ -2,10 +2,12 @@ package main
 
 import (
 	"testing"
+	"time"
 
 	"iops-limit-service/pkg/config"
 	"iops-limit-service/pkg/container"
 	"iops-limit-service/pkg/detector"
+	"iops-limit-service/pkg/service"
 )
 
 func TestDetectRuntime(t *testing.T) {
@@ -108,4 +110,50 @@ func BenchmarkShouldSkip(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		container.ShouldSkip(containerInfo, keywords)
 	}
+}
+
+func TestEventListening(t *testing.T) {
+	// 获取测试配置
+	cfg := config.GetDefaultConfig()
+	cfg.ContainerRuntime = "docker" // 使用docker进行测试
+	cfg.ContainerIOPSLimit = 500
+	cfg.DataMount = "/data"
+	cfg.ExcludeKeywords = []string{"pause", "istio-proxy"}
+
+	// 创建服务
+	svc, err := service.NewIOPSLimitService(cfg)
+	if err != nil {
+		t.Skipf("Skipping test: failed to create service: %v", err)
+	}
+
+	// 测试处理现有容器
+	err = svc.ProcessExistingContainers()
+	if err != nil {
+		t.Logf("Warning: failed to process existing containers: %v", err)
+	}
+
+	// 测试事件监听（只运行很短时间）
+	done := make(chan bool)
+	go func() {
+		defer close(done)
+		// 只监听5秒钟
+		time.Sleep(5 * time.Second)
+	}()
+
+	// 启动事件监听
+	go func() {
+		if err := svc.WatchEvents(); err != nil {
+			t.Logf("Event watching stopped: %v", err)
+		}
+	}()
+
+	// 等待测试完成
+	<-done
+
+	// 关闭服务
+	if err := svc.Close(); err != nil {
+		t.Logf("Warning: failed to close service: %v", err)
+	}
+
+	t.Log("Event listening test completed")
 }

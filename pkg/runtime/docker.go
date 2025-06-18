@@ -86,23 +86,27 @@ func (d *DockerRuntime) GetContainerByID(containerID string) (*container.Contain
 
 // WatchContainerEvents 监听容器事件
 func (d *DockerRuntime) WatchContainerEvents() error {
-	// 监听容器创建事件
+	// 监听容器启动事件而不是创建事件
 	f := filters.NewArgs()
 	f.Add("type", "container")
-	f.Add("event", "create")
+	f.Add("event", "start")
 	ctx := context.Background()
 	msgs, errs := d.client.Events(ctx, types.EventsOptions{Filters: f})
 
 	for {
 		select {
 		case event := <-msgs:
-			if event.Type == "container" && event.Action == "create" {
+			if event.Type == "container" && event.Action == "start" {
+				// 等待一小段时间确保容器完全启动
+				time.Sleep(2 * time.Second)
+
 				containerInfo, err := d.GetContainerByID(event.Actor.ID)
 				if err != nil {
 					log.Printf("Failed to get container info for %s: %v", event.Actor.ID, err)
 					continue
 				}
 				if !container.ShouldSkip(containerInfo, d.config.ExcludeKeywords) {
+					log.Printf("Container started: %s (%s)", containerInfo.ID, containerInfo.Name)
 					d.ProcessContainer(containerInfo)
 				}
 			}
