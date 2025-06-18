@@ -5,8 +5,8 @@ go 1.21
 require (
 	github.com/containerd/containerd v1.7.27
 	github.com/containerd/containerd/api v1.8.0
-	github.com/containerd/typeurl v1.0.2
 	github.com/docker/docker v23.0.3+incompatible
+	google.golang.org/protobuf v1.35.2
 )
 
 require (
@@ -63,6 +63,5 @@ require (
 	google.golang.org/genproto v0.0.0-20231211222908-989df2bf70f3 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20240401170217-c3f982113cda // indirect
 	google.golang.org/grpc v1.59.0 // indirect
-	google.golang.org/protobuf v1.35.2 // indirect
 	gotest.tools/v3 v3.5.1 // indirect
 )

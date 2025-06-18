@@ -27,7 +27,7 @@ type ContainerdRuntime struct {
 
 // NewContainerdRuntime 创建containerd运行时
 func NewContainerdRuntime(config *config.Config) (*ContainerdRuntime, error) {
-	client, err := containerd.New("/run/containerd/containerd.sock")
+	client, err := containerd.New(config.ContainerSocketPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to containerd: %v", err)
 	}

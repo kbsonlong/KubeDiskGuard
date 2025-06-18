@@ -17,6 +17,7 @@ type Config struct {
 	ContainerRuntime    string   `json:"container_runtime"`
 	CgroupVersion       string   `json:"cgroup_version"`
 	CheckInterval       int      `json:"check_interval"`
+	ContainerSocketPath   string   `json:"container_socket_path,omitempty"` // 可选字段，默认为空
 }
 
 // GetDefaultConfig 获取默认配置
@@ -30,6 +31,7 @@ func GetDefaultConfig() *Config {
 		ContainerRuntime:    "auto",
 		CgroupVersion:       "auto",
 		CheckInterval:       30,
+		ContainerSocketPath: "/run/containerd/containerd.sock",
 	}
 }
 
@@ -71,6 +73,10 @@ func LoadFromEnv(config *Config) {
 		if interval, err := strconv.Atoi(val); err == nil {
 			config.CheckInterval = interval
 		}
+	}
+
+	if val := os.Getenv("Container_Socket_Path"); val != "" {
+		config.ContainerSocketPath = val
 	}
 }
 
