@@ -17,7 +17,7 @@ help: ## 显示帮助信息
 .PHONY: build
 build: ## 构建 Go 二进制文件
 	@echo "构建二进制文件..."
-	CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o $(BINARY_NAME) $(MAIN_FILE)
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -installsuffix cgo -o $(BINARY_NAME) $(MAIN_FILE)
 
 .PHONY: build-local
 build-local: ## 构建本地二进制文件

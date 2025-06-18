@@ -136,6 +136,7 @@ func (d *DockerRuntime) ProcessContainer(container *container.ContainerInfo) err
 		log.Printf("Failed to set IOPS limit for container %s: %v", container.ID, err)
 		return err
 	}
+	log.Printf("Successfully set IOPS limit for container %s: %s %d", container.Name, majMin, d.config.ContainerIOPSLimit)
 
 	return nil
 }

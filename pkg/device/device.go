@@ -40,7 +40,7 @@ func GetMajMin(dataMount string) (string, error) {
 	}
 
 	// 获取主次设备号
-	cmd = exec.Command("lsblk", "-no", "MAJ:MIN", "/dev/"+parentDev)
+	cmd = exec.Command("lsblk", "-d", "-no", "MAJ:MIN", "/dev/"+parentDev)
 	output, err = cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("failed to get major:minor: %v", err)

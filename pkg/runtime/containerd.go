@@ -169,11 +169,12 @@ func (c *ContainerdRuntime) ProcessContainer(container *container.ContainerInfo)
 	}
 
 	cgroupPath := c.cgroup.FindCgroupPath(container.ID)
+	log.Printf("Found cgroup path for container %s: %s", container.Name, cgroupPath)
 	if err := c.cgroup.SetIOPSLimit(cgroupPath, majMin, c.config.ContainerIOPSLimit); err != nil {
 		log.Printf("Failed to set IOPS limit for container %s: %v", container.ID, err)
 		return err
 	}
 
-	log.Printf("Successfully set IOPS limit for container %s: %s %d", container.ID, majMin, c.config.ContainerIOPSLimit)
+	log.Printf("Successfully set IOPS limit for container %s: %s %d", container.Name, majMin, c.config.ContainerIOPSLimit)
 	return nil
 }

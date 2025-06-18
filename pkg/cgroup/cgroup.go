@@ -2,10 +2,10 @@ package cgroup
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strconv"
-	"time"
 )
 
 // Manager cgroup管理器
@@ -61,8 +61,7 @@ func (m *Manager) SetIOPSLimit(cgroupPath, majMin string, iopsLimit int) error {
 			return fmt.Errorf("failed to set write iops limit: %v", err)
 		}
 
-		fmt.Printf("[%s] Set IOPS limit at %s: %s %s (v1)\n",
-			time.Now().Format("2006-01-02 15:04:05"), cgroupPath, majMin, iopsLimitStr)
+		log.Printf("Set IOPS limit at %s %s (v1)", majMin, iopsLimitStr)
 	} else {
 		// cgroup v2: 写入io.max文件
 		ioMaxFile := filepath.Join(cgroupPath, "io.max")
@@ -72,8 +71,7 @@ func (m *Manager) SetIOPSLimit(cgroupPath, majMin string, iopsLimit int) error {
 			return fmt.Errorf("failed to set io.max: %v", err)
 		}
 
-		fmt.Printf("[%s] Set IOPS limit at %s: %s riops=%s wiops=%s (v2)\n",
-			time.Now().Format("2006-01-02 15:04:05"), cgroupPath, majMin, iopsLimitStr, iopsLimitStr)
+		log.Printf("Set IOPS limit at %s %s (v2)", majMin, iopsLimitStr)
 	}
 
 	return nil
