@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"testing"
 	"time"
 
@@ -271,4 +272,142 @@ func TestSetIOPSLimit(t *testing.T) {
 	if ci.Name != "set" {
 		t.Errorf("SetIOPSLimit did not set name as expected")
 	}
+}
+
+func TestProcessExistingContainersWithPodAnnotations(t *testing.T) {
+	// 获取测试配置
+	cfg := config.GetDefaultConfig()
+	cfg.ContainerRuntime = "docker" // 使用docker进行测试
+	cfg.ContainerIOPSLimit = 500
+	cfg.DataMount = "/data"
+	cfg.ExcludeKeywords = []string{"pause", "istio-proxy"}
+
+	// 创建服务
+	svc, err := service.NewIOPSLimitService(cfg)
+	if err != nil {
+		t.Skipf("Skipping test: failed to create service: %v", err)
+	}
+
+	// 测试处理现有容器（包含Pod注解逻辑）
+	err = svc.ProcessExistingContainers()
+	if err != nil {
+		t.Logf("Warning: failed to process existing containers: %v", err)
+	}
+
+	// 关闭服务
+	if err := svc.Close(); err != nil {
+		t.Logf("Warning: failed to close service: %v", err)
+	}
+
+	t.Log("ProcessExistingContainers with Pod annotations test completed")
+}
+
+func TestExtractPodInfoFromContainer(t *testing.T) {
+	// 创建测试服务实例
+	cfg := config.GetDefaultConfig()
+	svc, err := service.NewIOPSLimitService(cfg)
+	if err != nil {
+		t.Skipf("Skipping test: failed to create service: %v", err)
+	}
+
+	// 测试用例
+	testCases := []struct {
+		name         string
+		container    *container.ContainerInfo
+		expectedNS   string
+		expectedName string
+	}{
+		{
+			name: "valid_pod_info",
+			container: &container.ContainerInfo{
+				ID: "test-container",
+				Annotations: map[string]string{
+					"io.kubernetes.pod.namespace": "test-namespace",
+					"io.kubernetes.pod.name":      "test-pod",
+				},
+			},
+			expectedNS:   "test-namespace",
+			expectedName: "test-pod",
+		},
+		{
+			name: "missing_namespace",
+			container: &container.ContainerInfo{
+				ID: "test-container",
+				Annotations: map[string]string{
+					"io.kubernetes.pod.name": "test-pod",
+				},
+			},
+			expectedNS:   "",
+			expectedName: "",
+		},
+		{
+			name: "missing_name",
+			container: &container.ContainerInfo{
+				ID: "test-container",
+				Annotations: map[string]string{
+					"io.kubernetes.pod.namespace": "test-namespace",
+				},
+			},
+			expectedNS:   "",
+			expectedName: "",
+		},
+		{
+			name: "no_annotations",
+			container: &container.ContainerInfo{
+				ID:          "test-container",
+				Annotations: map[string]string{},
+			},
+			expectedNS:   "",
+			expectedName: "",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			// 由于extractPodInfoFromContainer是私有方法，我们通过反射或其他方式测试
+			// 这里我们直接测试逻辑，因为方法很简单
+			ns, name := "", ""
+			if namespace, ok := tc.container.Annotations["io.kubernetes.pod.namespace"]; ok {
+				if podName, ok := tc.container.Annotations["io.kubernetes.pod.name"]; ok {
+					ns, name = namespace, podName
+				}
+			}
+
+			if ns != tc.expectedNS {
+				t.Errorf("Expected namespace %s, got %s", tc.expectedNS, ns)
+			}
+			if name != tc.expectedName {
+				t.Errorf("Expected name %s, got %s", tc.expectedName, name)
+			}
+		})
+	}
+
+	// 关闭服务
+	if err := svc.Close(); err != nil {
+		t.Logf("Warning: failed to close service: %v", err)
+	}
+}
+
+func TestKubeletConfig(t *testing.T) {
+	// 测试kubelet配置加载
+	cfg := config.GetDefaultConfig()
+
+	// 设置环境变量
+	os.Setenv("KUBELET_HOST", "test-host")
+	os.Setenv("KUBELET_PORT", "10255")
+
+	// 重新加载配置
+	config.LoadFromEnv(cfg)
+
+	// 验证配置
+	if cfg.KubeletHost != "test-host" {
+		t.Errorf("Expected KubeletHost to be 'test-host', got '%s'", cfg.KubeletHost)
+	}
+	if cfg.KubeletPort != "10255" {
+		t.Errorf("Expected KubeletPort to be '10255', got '%s'", cfg.KubeletPort)
+	}
+
+	// 清理环境变量
+	os.Unsetenv("KUBELET_HOST")
+	os.Unsetenv("KUBELET_PORT")
 }

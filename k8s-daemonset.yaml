@@ -40,6 +40,10 @@ spec:
           value: "auto"
         - name: CHECK_INTERVAL
           value: "30"
+        - name: KUBELET_HOST
+          value: "localhost"
+        - name: KUBELET_PORT
+          value: "10250"
         volumeMounts:
         - name: cgroup
           mountPath: /sys/fs/cgroup

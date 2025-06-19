@@ -6,6 +6,8 @@
 
 - 自动检测容器运行时（Docker/containerd）和 cgroup 版本（v1/v2）
 - 通过 client-go 监听本节点 Pod 事件，自动为新容器或注解变更的容器设置/调整 IOPS 限制
+- **服务重启时保持IOPS限制一致性**：重启后会自动获取Pod注解信息，确保现有容器的IOPS限制与注解配置保持一致
+- **优先使用kubelet API**：减少API Server压力，提高性能和可靠性
 - 支持多维度过滤（关键字、命名空间、正则、K8s label selector）
 - 支持通过注解动态调整单个 Pod 的 IOPS 限制
 - 配置灵活，环境变量可控
@@ -94,6 +96,8 @@ env:
 | `CONTAINER_RUNTIME` | auto | 容器运行时 |
 | `CGROUP_VERSION` | auto | cgroup 版本 |
 | `CHECK_INTERVAL` | 30 | 检查间隔（秒） |
+| `KUBELET_HOST` | localhost | kubelet API 主机地址 |
+| `KUBELET_PORT` | 10250 | kubelet API 端口 |
 
 ### 4. 快速开始
 
@@ -166,8 +170,27 @@ kubectl logs -n kube-system -l app=iops-limit-service -f
 ```
 服务会输出配置信息、容器检测和过滤、IOPS 限制设置、错误信息等。
 
+**重要说明**：服务重启时会自动获取Pod注解信息，确保现有容器的IOPS限制与注解配置保持一致。如果无法获取Pod信息（如网络问题），会使用默认配置作为fallback。
+
 ### 5. 健康检查
 服务包含 liveness 和 readiness 探针，确保服务正常运行。
+
+### 6. 服务重启行为
+- **正常情况**：重启后会自动获取本节点所有Running状态的Pod注解，并应用相应的IOPS限制
+- **网络异常**：如果无法连接Kubernetes API，会使用默认配置处理现有容器
+- **日志标识**：日志中会明确显示是使用Pod特定限制还是默认限制
+  - `Applied Pod-specific IOPS limit for container xxx (pod: namespace/name): 1000`
+  - `Applied default IOPS limit for container xxx: 500`
+
+### 7. kubelet API 使用说明
+- **优先使用**：服务优先使用kubelet API获取Pod信息，减少API Server压力
+- **自动回退**：如果kubelet API不可用，自动回退到API Server
+- **配置说明**：
+  - `KUBELET_HOST`: kubelet服务地址，默认为localhost
+  - `KUBELET_PORT`: kubelet API端口，默认为10250
+- **日志标识**：
+  - `Successfully got X pods from kubelet API`
+  - `Failed to get pods from kubelet API: xxx, falling back to API Server`
 
 ## 单元测试
 

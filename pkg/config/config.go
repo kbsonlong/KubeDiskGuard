@@ -21,6 +21,8 @@ type Config struct {
 	CgroupVersion        string   `json:"cgroup_version"`
 	CheckInterval        int      `json:"check_interval"`
 	ContainerSocketPath  string   `json:"container_socket_path,omitempty"` // 可选字段，默认为空
+	KubeletHost          string   `json:"kubelet_host,omitempty"`          // kubelet主机地址
+	KubeletPort          string   `json:"kubelet_port,omitempty"`          // kubelet端口
 }
 
 // GetDefaultConfig 获取默认配置
@@ -38,6 +40,8 @@ func GetDefaultConfig() *Config {
 		CgroupVersion:        "auto",
 		CheckInterval:        30,
 		ContainerSocketPath:  "/run/containerd/containerd.sock",
+		KubeletHost:          "",
+		KubeletPort:          "",
 	}
 }
 
@@ -95,6 +99,14 @@ func LoadFromEnv(config *Config) {
 
 	if val := os.Getenv("Container_Socket_Path"); val != "" {
 		config.ContainerSocketPath = val
+	}
+
+	if val := os.Getenv("KUBELET_HOST"); val != "" {
+		config.KubeletHost = val
+	}
+
+	if val := os.Getenv("KUBELET_PORT"); val != "" {
+		config.KubeletPort = val
 	}
 }
 
