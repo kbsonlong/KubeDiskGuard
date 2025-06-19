@@ -5,8 +5,8 @@ import (
 	"log"
 	"os"
 
-	"iops-limit-service/pkg/config"
-	"iops-limit-service/pkg/service"
+	"KubeDiskGuard/pkg/config"
+	"KubeDiskGuard/pkg/service"
 )
 
 func main() {
@@ -24,7 +24,7 @@ func main() {
 	log.Printf("Configuration: %s", cfg.ToJSON())
 
 	// 创建并运行服务
-	svc, err := service.NewIOPSLimitService(cfg)
+	svc, err := service.NewKubeDiskGuardService(cfg)
 	if err != nil {
 		log.Fatalf("Failed to create IOPS limit service: %v", err)
 	}

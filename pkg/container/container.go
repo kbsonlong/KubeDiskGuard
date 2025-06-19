@@ -11,7 +11,6 @@ type ContainerInfo struct {
 
 // Runtime 容器运行时接口
 type Runtime interface {
-
 	// GetContainerByID 根据ID获取容器信息
 	GetContainerByID(containerID string) (*ContainerInfo, error)
 
@@ -21,9 +20,8 @@ type Runtime interface {
 	// Close 关闭运行时连接
 	Close() error
 
-	// 新增：动态设置IOPS限制
-	SetIOPSLimit(container *ContainerInfo, iopsLimit int) error
-
-	// ResetIOPSLimit 解除IOPS限制
-	ResetIOPSLimit(container *ContainerInfo) error
+	// 动态设置IOPS和带宽限制（统一接口）
+	SetLimits(container *ContainerInfo, riops, wiops, rbps, wbps int) error
+	// 解除所有限速
+	ResetLimits(container *ContainerInfo) error
 }

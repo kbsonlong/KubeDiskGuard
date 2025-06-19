@@ -12,7 +12,7 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # 默认配置
-IMAGE_NAME="iops-limit-service"
+IMAGE_NAME="KubeDiskGuard"
 IMAGE_TAG="latest"
 REGISTRY="your-registry"
 NAMESPACE="kube-system"
@@ -127,7 +127,7 @@ deploy_to_k8s() {
     fi
     
     # 替换镜像地址并部署
-    if sed "s|your-registry/iops-limit-service:latest|$FULL_IMAGE_NAME|g" "$CONFIG_FILE" | kubectl apply -f -; then
+    if sed "s|your-registry/KubeDiskGuard:latest|$FULL_IMAGE_NAME|g" "$CONFIG_FILE" | kubectl apply -f -; then
         log_success "部署成功"
     else
         log_error "部署失败"
@@ -136,7 +136,7 @@ deploy_to_k8s() {
     
     # 等待部署完成
     log_info "等待部署完成..."
-    kubectl rollout status daemonset/iops-limit-service -n "$NAMESPACE" --timeout=300s
+    kubectl rollout status daemonset/KubeDiskGuard -n "$NAMESPACE" --timeout=300s
 }
 
 # 从 Kubernetes 卸载
@@ -157,21 +157,21 @@ show_status() {
     
     echo ""
     echo "=== DaemonSet 状态 ==="
-    kubectl get daemonset -n "$NAMESPACE" iops-limit-service
+    kubectl get daemonset -n "$NAMESPACE" KubeDiskGuard
     
     echo ""
     echo "=== Pod 状态 ==="
-    kubectl get pods -n "$NAMESPACE" -l app=iops-limit-service
+    kubectl get pods -n "$NAMESPACE" -l app=KubeDiskGuard
     
     echo ""
     echo "=== 服务日志 ==="
-    kubectl logs -n "$NAMESPACE" -l app=iops-limit-service --tail=10
+    kubectl logs -n "$NAMESPACE" -l app=KubeDiskGuard --tail=10
 }
 
 # 查看服务日志
 show_logs() {
     log_info "查看服务日志..."
-    kubectl logs -n "$NAMESPACE" -l app=iops-limit-service -f
+    kubectl logs -n "$NAMESPACE" -l app=KubeDiskGuard -f
 }
 
 # 运行测试
@@ -191,7 +191,7 @@ verify_deployment() {
     log_info "验证部署..."
     
     # 检查 DaemonSet 是否就绪
-    if kubectl get daemonset -n "$NAMESPACE" iops-limit-service -o jsonpath='{.status.numberReady}' | grep -q "$(kubectl get daemonset -n "$NAMESPACE" iops-limit-service -o jsonpath='{.status.desiredNumberScheduled}')"; then
+    if kubectl get daemonset -n "$NAMESPACE" KubeDiskGuard -o jsonpath='{.status.numberReady}' | grep -q "$(kubectl get daemonset -n "$NAMESPACE" KubeDiskGuard -o jsonpath='{.status.desiredNumberScheduled}')"; then
         log_success "DaemonSet 部署验证通过"
     else
         log_error "DaemonSet 部署验证失败"
@@ -199,7 +199,7 @@ verify_deployment() {
     fi
     
     # 检查 Pod 是否运行
-    if kubectl get pods -n "$NAMESPACE" -l app=iops-limit-service --field-selector=status.phase=Running | grep -q "iops-limit-service"; then
+    if kubectl get pods -n "$NAMESPACE" -l app=KubeDiskGuard --field-selector=status.phase=Running | grep -q "KubeDiskGuard"; then
         log_success "Pod 运行状态验证通过"
     else
         log_error "Pod 运行状态验证失败"

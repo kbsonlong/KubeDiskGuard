@@ -6,13 +6,12 @@ import (
 	"log"
 	"strings"
 
-	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/client"
 
-	"iops-limit-service/pkg/cgroup"
-	"iops-limit-service/pkg/config"
-	"iops-limit-service/pkg/container"
-	"iops-limit-service/pkg/device"
+	"KubeDiskGuard/pkg/cgroup"
+	"KubeDiskGuard/pkg/config"
+	"KubeDiskGuard/pkg/container"
+	"KubeDiskGuard/pkg/device"
 )
 
 // DockerRuntime Docker运行时
@@ -37,40 +36,6 @@ func NewDockerRuntime(config *config.Config) (*DockerRuntime, error) {
 		config: config,
 		cgroup: cgroup.NewManager(config.CgroupVersion),
 	}, nil
-}
-
-// GetContainers 获取所有容器
-func (d *DockerRuntime) GetContainers() ([]*container.ContainerInfo, error) {
-	containers, err := d.client.ContainerList(context.Background(), types.ContainerListOptions{})
-	if err != nil {
-		return nil, fmt.Errorf("failed to list containers: %v", err)
-	}
-
-	var containerInfos []*container.ContainerInfo
-	for _, c := range containers {
-		info, err := d.client.ContainerInspect(context.Background(), c.ID)
-		if err != nil {
-			log.Printf("Failed to inspect container %s: %v", c.ID, err)
-			continue
-		}
-
-		ci := &container.ContainerInfo{
-			ID:           info.ID,
-			Image:        info.Config.Image,
-			Name:         strings.TrimPrefix(info.Name, "/"),
-			CgroupParent: info.HostConfig.CgroupParent,
-			Annotations:  map[string]string{},
-		}
-		// 提取Labels到Annotations
-		for k, v := range info.Config.Labels {
-			ci.Annotations[k] = v
-		}
-
-		// 过滤已在service层完成，这里直接append
-		containerInfos = append(containerInfos, ci)
-	}
-
-	return containerInfos, nil
 }
 
 // GetContainerByID 根据ID获取容器信息
@@ -120,22 +85,22 @@ func (d *DockerRuntime) Close() error {
 	return nil
 }
 
-// SetIOPSLimit 动态设置IOPS限制
-func (d *DockerRuntime) SetIOPSLimit(container *container.ContainerInfo, iopsLimit int) error {
+// SetLimits 统一设置IOPS和BPS限制
+func (d *DockerRuntime) SetLimits(container *container.ContainerInfo, riops, wiops, rbps, wbps int) error {
 	majMin, err := device.GetMajMin(d.config.DataMount)
 	if err != nil {
 		return err
 	}
 	cgroupPath := d.cgroup.BuildCgroupPath(container.ID, container.CgroupParent)
-	return d.cgroup.SetIOPSLimit(cgroupPath, majMin, iopsLimit)
+	return d.cgroup.SetLimits(cgroupPath, majMin, riops, wiops, rbps, wbps)
 }
 
-// ResetIOPSLimit 解除IOPS限制
-func (d *DockerRuntime) ResetIOPSLimit(container *container.ContainerInfo) error {
+// ResetLimits 统一解除所有限速
+func (d *DockerRuntime) ResetLimits(container *container.ContainerInfo) error {
 	majMin, err := device.GetMajMin(d.config.DataMount)
 	if err != nil {
 		return err
 	}
 	cgroupPath := d.cgroup.BuildCgroupPath(container.ID, container.CgroupParent)
-	return d.cgroup.ResetIOPSLimit(cgroupPath, majMin)
+	return d.cgroup.ResetLimits(cgroupPath, majMin)
 }

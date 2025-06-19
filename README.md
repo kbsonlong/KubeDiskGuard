@@ -1,16 +1,32 @@
-# Kubernetes NVMe 磁盘 IOPS 限速服务
+<p align="center">
+  <img src="./docs/logo.svg" width="120" alt="KubeDiskGuard Logo"/>
+</p>
 
-这是一个用 Go 语言编写的 Kubernetes DaemonSet 服务，用于自动限制容器对 NVMe 磁盘的 IOPS 访问，防止单个容器的高 IO 操作影响宿主机性能。
+<h1 align="center">KubeDiskGuard</h1>
+<p align="center">Kubernetes 节点级磁盘 IO 资源守护与限速服务</p>
 
-## 核心特性
+# Kubernetes NVMe 磁盘 IOPS/BPS 限速服务
+
+这是一个用 Go 语言编写的 Kubernetes DaemonSet 服务，用于自动限制容器对 NVMe 磁盘的 IOPS/BPS 访问，防止单个容器的高 IO 操作影响宿主机性能。
+
+## 文档导航
+
+- [用户手册（使用说明、注解/环境变量配置、FAQ）](./docs/USER_GUIDE.md)
+- [开发手册（架构、主流程、扩展开发）](./docs/DEV_GUIDE.md)
+- [部署手册（镜像构建、DaemonSet部署、生产实践）](./docs/DEPLOY_GUIDE.md)
+- [变更历史](./docs/CHANGELOG.md)
+
+---
+
+## 简介与核心特性
 
 - 自动检测容器运行时（Docker/containerd）和 cgroup 版本（v1/v2）
 - **以Pod为主索引，所有限速和过滤逻辑均以Pod+containerStatuses为入口，避免全量遍历容器运行时**
-- 通过 client-go 监听本节点 Pod 事件，自动为新容器或注解变更的容器设置/调整 IOPS 限制
-- **服务重启时保持IOPS限制一致性**：重启后会自动获取Pod注解信息，确保现有容器的IOPS限制与注解配置保持一致
+- 通过 client-go 监听本节点 Pod 事件，自动为新容器或注解变更的容器设置/调整 IOPS/BPS 限制
+- **服务重启时保持IOPS/BPS限制一致性**：重启后会自动获取Pod注解信息，确保现有容器的IOPS/BPS限制与注解配置保持一致
 - **优先使用kubelet API**：减少API Server压力，提高性能和可靠性
 - 支持多维度过滤（关键字、命名空间、正则、K8s label selector）
-- 支持通过注解动态调整单个 Pod 的 IOPS 限制
+- 支持通过注解动态调整单个 Pod 的 IOPS/BPS 限制
 - 配置灵活，环境变量可控
 - 健康检查、详细日志、单元测试
 
@@ -31,7 +47,7 @@ flowchart TD
         direction TB
         Kubelet["Kubelet (原生组件)"]
         Runtime["Docker/Containerd"]
-        Service["IOPS Limit Service (DaemonSet)"]
+        Service["KubeDiskGuard (DaemonSet)"]
         Cgroup["Cgroup v1/v2"]
         Pod1["Pod (含注解)"]
         Pod2["Pod (含注解)"]
@@ -62,9 +78,9 @@ flowchart TD
 
 ## 使用说明
 
-### 1. 注解动态调整 IOPS
+### 1. 注解动态调整 IOPS/BPS
 
-在 Pod 的 metadata.annotations 中添加如下注解即可动态调整该 Pod 的 IOPS 限制：
+在 Pod 的 metadata.annotations 中添加如下注解即可动态调整该 Pod 的 IOPS/BPS 限制：
 
 ```yaml
 apiVersion: v1
@@ -72,8 +88,14 @@ kind: Pod
 metadata:
   name: mypod
   annotations:
-    iops-limit/limit: "1200"
+    iops-limit/read-iops: "1200"   # 读IOPS限制
+    iops-limit/write-iops: "800"   # 写IOPS限制
+    # 或统一设置
+    iops-limit/iops: "1000"        # 读写IOPS都为1000
 ```
+
+- 优先级：`read-iops`/`write-iops` > `iops`
+- 注解为0表示解除对应方向的IOPS/BPS限速
 
 ### 2. 过滤机制
 
@@ -98,7 +120,9 @@ env:
 | 环境变量 | 默认值 | 说明 |
 |---------|--------|------|
 | `NODE_NAME` |  | 必须，节点名，建议通过Downward API注入 |
-| `CONTAINER_IOPS_LIMIT` | 500 | 单个容器的 IOPS 限制 |
+| `CONTAINER_READ_IOPS_LIMIT` | 500 | 单个容器的读IOPS限制 |
+| `CONTAINER_WRITE_IOPS_LIMIT` | 500 | 单个容器的写IOPS限制 |
+| `CONTAINER_IOPS_LIMIT` | 500 | 兼容老配置，若未设置read/write则用此值 |
 | `DATA_MOUNT` | /data | 数据盘挂载点 |
 | `EXCLUDE_KEYWORDS` | pause,istio-proxy,psmdb,kube-system,koordinator,apisix | 排除的容器关键字 |
 | `EXCLUDE_NAMESPACES` | kube-system | 排除的命名空间 |
@@ -124,6 +148,11 @@ env:
         fieldPath: spec.nodeName
 ```
 
+#### IOPS注解优先级说明
+- `iops-limit/read-iops`、`iops-limit/write-iops` 优先于 `iops-limit/iops`
+- 若都未设置，则用全局环境变量
+- 注解为0表示解除限速
+
 ### 4. 快速开始
 
 1. 构建镜像并推送到仓库
@@ -133,7 +162,7 @@ env:
 
 ### 5. 验证与排查
 
-- 创建测试容器，使用 fio 验证 IOPS 限制
+- 创建测试容器，使用 fio 验证 IOPS/BPS 限制
 - 检查 cgroup 路径和限速文件
 - 查看服务日志，确认过滤和限速逻辑
 - 遇到问题请检查权限、挂载点、cgroup 版本、环境变量配置
@@ -193,15 +222,15 @@ find /sys/fs/cgroup -name "*[container-id]*"
 ```bash
 kubectl logs -n kube-system -l app=iops-limit-service -f
 ```
-服务会输出配置信息、容器检测和过滤、IOPS 限制设置、错误信息等。
+服务会输出配置信息、容器检测和过滤、IOPS/BPS 限制设置、错误信息等。
 
-**重要说明**：服务重启时会自动获取Pod注解信息，确保现有容器的IOPS限制与注解配置保持一致。如果无法获取Pod信息（如网络问题），会使用默认配置作为fallback。
+**重要说明**：服务重启时会自动获取Pod注解信息，确保现有容器的IOPS/BPS限制与注解配置保持一致。如果无法获取Pod信息（如网络问题），会使用默认配置作为fallback。
 
 ### 5. 健康检查
 服务包含 liveness 和 readiness 探针，确保服务正常运行。
 
 ### 6. 服务重启行为
-- **正常情况**：重启后会自动获取本节点所有Running状态的Pod注解，并应用相应的IOPS限制
+- **正常情况**：重启后会自动获取本节点所有Running状态的Pod注解，并应用相应的IOPS/BPS限制
 - **网络异常**：如果无法连接Kubernetes API，会使用默认配置处理现有容器
 - **日志标识**：日志中会明确显示是使用Pod特定限制还是默认限制
   - `Applied Pod-specific IOPS limit for container xxx (pod: namespace/name): 1000`
@@ -232,7 +261,7 @@ go test -v
 - 注解变更后通常几秒内自动生效
 - 推荐 K8s 1.20+，理论上 1.16+ 兼容
 - 仅主支持单数据盘挂载点，如需多盘可扩展
-- IOPS 限制只对整个 NVMe 设备生效，不对分区生效
+- IOPS/BPS 限制只对整个 NVMe 设备生效，不对分区生效
 - 需以特权模式运行，访问 cgroup 和容器运行时
 - 正确配置过滤关键字，避免影响系统容器
 - 服务包含健康检查和详细日志输出

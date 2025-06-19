@@ -6,27 +6,27 @@ import (
 	"os"
 	"reflect"
 
-	"iops-limit-service/pkg/config"
-	"iops-limit-service/pkg/container"
-	"iops-limit-service/pkg/detector"
-	"iops-limit-service/pkg/kubeclient"
-	"iops-limit-service/pkg/runtime"
+	"KubeDiskGuard/pkg/config"
+	"KubeDiskGuard/pkg/container"
+	"KubeDiskGuard/pkg/detector"
+	"KubeDiskGuard/pkg/kubeclient"
+	"KubeDiskGuard/pkg/runtime"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/watch"
 )
 
-// IOPSLimitService IOPS限制服务
-type IOPSLimitService struct {
+// KubeDiskGuardService 节点级磁盘IO资源守护与限速服务
+type KubeDiskGuardService struct {
 	config     *config.Config
 	runtime    container.Runtime
 	kubeClient kubeclient.IKubeClient
 }
 
-// NewIOPSLimitService 创建IOPS限制服务
-func NewIOPSLimitService(config *config.Config) (*IOPSLimitService, error) {
-	service := &IOPSLimitService{
+// NewKubeDiskGuardService 创建KubeDiskGuardService
+func NewKubeDiskGuardService(config *config.Config) (*KubeDiskGuardService, error) {
+	service := &KubeDiskGuardService{
 		config: config,
 	}
 
@@ -74,7 +74,7 @@ func NewIOPSLimitService(config *config.Config) (*IOPSLimitService, error) {
 }
 
 // ShouldSkipContainer 只做关键字过滤
-func (s *IOPSLimitService) ShouldSkipContainer(image, name string) bool {
+func (s *KubeDiskGuardService) ShouldSkipContainer(image, name string) bool {
 	for _, keyword := range s.config.ExcludeKeywords {
 		if contains(image, keyword) || contains(name, keyword) {
 			return true
@@ -101,8 +101,10 @@ func containsSubstring(s, substr string) bool {
 	return false
 }
 
-// processPodContainers 处理单个Pod下所有容器的IOPS限速
-func (s *IOPSLimitService) processPodContainers(pod corev1.Pod, iopsLimit int) {
+// processPodContainers 处理单个Pod下所有容器的IOPS/BPS限速（支持读写分开）
+func (s *KubeDiskGuardService) processPodContainers(pod corev1.Pod, readIops int) {
+	readIopsVal, writeIopsVal := ParseIopsLimitFromAnnotations(pod.Annotations, s.config.ContainerReadIOPSLimit, s.config.ContainerWriteIOPSLimit)
+	readBps, writeBps := ParseBpsLimitFromAnnotations(pod.Annotations, s.config.ContainerReadBPSLimit, s.config.ContainerWriteBPSLimit)
 	for _, cs := range pod.Status.ContainerStatuses {
 		containerID := parseRuntimeID(cs.ContainerID)
 		if containerID == "" {
@@ -114,27 +116,29 @@ func (s *IOPSLimitService) processPodContainers(pod corev1.Pod, iopsLimit int) {
 			continue
 		}
 		if s.ShouldSkipContainer(containerInfo.Image, containerInfo.Name) {
-			log.Printf("Skip IOPS limit for container %s (excluded by keyword)", containerInfo.ID)
+			log.Printf("Skip IOPS/BPS limit for container %s (excluded by keyword)", containerInfo.ID)
 			continue
 		}
-		if iopsLimit > 0 {
-			if err := s.runtime.SetIOPSLimit(containerInfo, iopsLimit); err != nil {
-				log.Printf("Failed to set IOPS limit for container %s: %v", containerInfo.ID, err)
+		// 判断是否需要解除限速
+		if readIopsVal == 0 && writeIopsVal == 0 && readBps == 0 && writeBps == 0 {
+			if err := s.runtime.ResetLimits(containerInfo); err != nil {
+				log.Printf("Failed to reset all limits for container %s: %v", containerInfo.ID, err)
 			} else {
-				log.Printf("Applied IOPS limit for container %s (pod: %s/%s): %d", containerInfo.ID, pod.Namespace, pod.Name, iopsLimit)
+				log.Printf("Reset all limits for container %s (pod: %s/%s)", containerInfo.ID, pod.Namespace, pod.Name)
 			}
+			continue
+		}
+		// 一次性下发所有限速项
+		if err := s.runtime.SetLimits(containerInfo, readIopsVal, writeIopsVal, readBps, writeBps); err != nil {
+			log.Printf("Failed to set limits for container %s: %v", containerInfo.ID, err)
 		} else {
-			if err := s.runtime.ResetIOPSLimit(containerInfo); err != nil {
-				log.Printf("Failed to reset IOPS limit for container %s: %v", containerInfo.ID, err)
-			} else {
-				log.Printf("Reset IOPS limit for container %s (pod: %s/%s)", containerInfo.ID, pod.Namespace, pod.Name)
-			}
+			log.Printf("Applied limits for container %s (pod: %s/%s): riops=%d wiops=%d rbps=%d wbps=%d", containerInfo.ID, pod.Namespace, pod.Name, readIopsVal, writeIopsVal, readBps, writeBps)
 		}
 	}
 }
 
 // ShouldProcessPod 判断Pod是否需要处理（命名空间、labelSelector过滤）
-func (s *IOPSLimitService) ShouldProcessPod(pod corev1.Pod) bool {
+func (s *KubeDiskGuardService) ShouldProcessPod(pod corev1.Pod) bool {
 	if pod.Status.Phase != corev1.PodRunning {
 		return false
 	}
@@ -161,7 +165,7 @@ func (s *IOPSLimitService) ShouldProcessPod(pod corev1.Pod) bool {
 }
 
 // ProcessExistingContainers 处理现有容器（以Pod为主索引）
-func (s *IOPSLimitService) ProcessExistingContainers() error {
+func (s *KubeDiskGuardService) ProcessExistingContainers() error {
 	pods, err := s.getNodePods()
 	if err != nil {
 		log.Printf("Failed to get node pods: %v", err)
@@ -174,8 +178,8 @@ func (s *IOPSLimitService) ProcessExistingContainers() error {
 			continue
 		}
 		// 解析注解
-		iopsLimit := ParseIopsLimitFromAnnotations(pod.Annotations, s.config.ContainerIOPSLimit)
-		s.processPodContainers(pod, iopsLimit)
+		readIops, _ := ParseIopsLimitFromAnnotations(pod.Annotations, s.config.ContainerReadIOPSLimit, s.config.ContainerWriteIOPSLimit)
+		s.processPodContainers(pod, readIops)
 	}
 	return nil
 }
@@ -195,12 +199,12 @@ func parseRuntimeID(k8sID string) string {
 }
 
 // WatchEvents 监听事件
-func (s *IOPSLimitService) WatchEvents() error {
+func (s *KubeDiskGuardService) WatchEvents() error {
 	return s.WatchPodEvents()
 }
 
 // WatchPodEvents 监听本节点Pod变化，动态调整IOPS
-func (s *IOPSLimitService) WatchPodEvents() error {
+func (s *KubeDiskGuardService) WatchPodEvents() error {
 	watcher, err := s.kubeClient.WatchNodePods()
 	if err != nil {
 		return err
@@ -210,7 +214,8 @@ func (s *IOPSLimitService) WatchPodEvents() error {
 	log.Printf("Start watching pods on node: %s", nodeName)
 	podAnnotations := make(map[string]struct {
 		Annotations map[string]string
-		IopsLimit   int
+		ReadIops    int
+		WriteIops   int
 	})
 	for event := range watcher.ResultChan() {
 		pod, ok := event.Object.(*corev1.Pod)
@@ -225,17 +230,19 @@ func (s *IOPSLimitService) WatchPodEvents() error {
 			}
 			old := podAnnotations[key]
 			newAnn := pod.Annotations
-			iopsLimit := ParseIopsLimitFromAnnotations(newAnn, s.config.ContainerIOPSLimit)
-			if reflect.DeepEqual(old.Annotations, newAnn) && old.IopsLimit == iopsLimit {
+			readIops, writeIops := ParseIopsLimitFromAnnotations(newAnn, s.config.ContainerReadIOPSLimit, s.config.ContainerWriteIOPSLimit)
+			if reflect.DeepEqual(old.Annotations, newAnn) && old.ReadIops == readIops && old.WriteIops == writeIops {
 				continue
 			}
-			s.processPodContainers(*pod, iopsLimit)
+			s.processPodContainers(*pod, readIops)
 			podAnnotations[key] = struct {
 				Annotations map[string]string
-				IopsLimit   int
+				ReadIops    int
+				WriteIops   int
 			}{
 				Annotations: copyMap(newAnn),
-				IopsLimit:   iopsLimit,
+				ReadIops:    readIops,
+				WriteIops:   writeIops,
 			}
 		case watch.Deleted:
 			delete(podAnnotations, key)
@@ -244,16 +251,32 @@ func (s *IOPSLimitService) WatchPodEvents() error {
 	return nil
 }
 
-// ParseIopsLimitFromAnnotations 解析注解中的iops限制（导出）
-func ParseIopsLimitFromAnnotations(ann map[string]string, defaultLimit int) int {
-	if v, ok := ann["iops-limit/limit"]; ok {
+// ParseIopsLimitFromAnnotations 解析注解中的iops限制（分别支持读写）
+func ParseIopsLimitFromAnnotations(ann map[string]string, defaultRead, defaultWrite int) (readIops, writeIops int) {
+	readIops, writeIops = defaultRead, defaultWrite
+	if v, ok := ann["iops-limit/read-iops"]; ok {
 		var val int
 		_, err := fmt.Sscanf(v, "%d", &val)
-		if err == nil && val > 0 {
-			return val
+		if err == nil && val >= 0 {
+			readIops = val
 		}
 	}
-	return defaultLimit
+	if v, ok := ann["iops-limit/write-iops"]; ok {
+		var val int
+		_, err := fmt.Sscanf(v, "%d", &val)
+		if err == nil && val >= 0 {
+			writeIops = val
+		}
+	}
+	// 通用iops注解，若存在，覆盖读写
+	if v, ok := ann["iops-limit/iops"]; ok {
+		var val int
+		_, err := fmt.Sscanf(v, "%d", &val)
+		if err == nil && val >= 0 {
+			readIops, writeIops = val, val
+		}
+	}
+	return
 }
 
 // copyMap 深拷贝map，防止引用问题
@@ -266,7 +289,7 @@ func copyMap(src map[string]string) map[string]string {
 }
 
 // Close 关闭服务
-func (s *IOPSLimitService) Close() error {
+func (s *KubeDiskGuardService) Close() error {
 	if s.runtime != nil {
 		return s.runtime.Close()
 	}
@@ -274,7 +297,7 @@ func (s *IOPSLimitService) Close() error {
 }
 
 // Run 运行服务
-func (s *IOPSLimitService) Run() error {
+func (s *KubeDiskGuardService) Run() error {
 	log.Println("Starting IOPS limit service...")
 
 	// 确保在服务结束时关闭运行时连接
@@ -294,12 +317,12 @@ func (s *IOPSLimitService) Run() error {
 }
 
 // getNodePods 获取本节点的所有Pod（优先使用kubelet API，fallback到API Server）
-func (s *IOPSLimitService) getNodePods() ([]corev1.Pod, error) {
+func (s *KubeDiskGuardService) getNodePods() ([]corev1.Pod, error) {
 	return s.kubeClient.ListNodePodsWithKubeletFirst()
 }
 
 // ResetAllContainersIOPSLimit 解除所有容器的IOPS限速
-func (s *IOPSLimitService) ResetAllContainersIOPSLimit() error {
+func (s *KubeDiskGuardService) ResetAllContainersIOPSLimit() error {
 	pods, err := s.getNodePods()
 	if err != nil {
 		return err
@@ -315,7 +338,7 @@ func (s *IOPSLimitService) ResetAllContainersIOPSLimit() error {
 				log.Printf("Failed to get container info for %s: %v", containerID, err)
 				continue
 			}
-			if err := s.runtime.ResetIOPSLimit(containerInfo); err != nil {
+			if err := s.runtime.ResetLimits(containerInfo); err != nil {
 				log.Printf("Failed to reset IOPS limit for container %s: %v", containerID, err)
 			}
 		}
@@ -324,8 +347,8 @@ func (s *IOPSLimitService) ResetAllContainersIOPSLimit() error {
 }
 
 // 新增：支持注入mock kubeclient
-func NewIOPSLimitServiceWithKubeClient(config *config.Config, kc kubeclient.IKubeClient) (*IOPSLimitService, error) {
-	service := &IOPSLimitService{
+func NewKubeDiskGuardServiceWithKubeClient(config *config.Config, kc kubeclient.IKubeClient) (*KubeDiskGuardService, error) {
+	service := &KubeDiskGuardService{
 		config:     config,
 		kubeClient: kc,
 	}
@@ -352,4 +375,34 @@ func NewIOPSLimitServiceWithKubeClient(config *config.Config, kc kubeclient.IKub
 		return nil, fmt.Errorf("unsupported container runtime: %s", config.ContainerRuntime)
 	}
 	return service, nil
+}
+
+// ParseBpsLimitFromAnnotations 解析注解中的带宽限制（字节/秒）
+func ParseBpsLimitFromAnnotations(ann map[string]string, defaultRead, defaultWrite int) (readBps, writeBps int) {
+	// 优先单独注解
+	readBps, writeBps = defaultRead, defaultWrite
+	if v, ok := ann["iops-limit/read-bps"]; ok {
+		if val, err := parseBpsValue(v); err == nil && val >= 0 {
+			readBps = val
+		}
+	}
+	if v, ok := ann["iops-limit/write-bps"]; ok {
+		if val, err := parseBpsValue(v); err == nil && val >= 0 {
+			writeBps = val
+		}
+	}
+	// 通用bps注解，若存在，覆盖读写
+	if v, ok := ann["iops-limit/bps"]; ok {
+		if val, err := parseBpsValue(v); err == nil && val >= 0 {
+			readBps, writeBps = val, val
+		}
+	}
+	return
+}
+
+// parseBpsValue 支持纯数字（字节/秒），后续可扩展单位
+func parseBpsValue(s string) (int, error) {
+	var v int
+	_, err := fmt.Sscanf(s, "%d", &v)
+	return v, err
 }

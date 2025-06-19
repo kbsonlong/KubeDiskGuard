@@ -5,10 +5,10 @@ import (
 	"testing"
 	"time"
 
-	"iops-limit-service/pkg/config"
-	"iops-limit-service/pkg/container"
-	"iops-limit-service/pkg/detector"
-	"iops-limit-service/pkg/service"
+	"KubeDiskGuard/pkg/config"
+	"KubeDiskGuard/pkg/container"
+	"KubeDiskGuard/pkg/detector"
+	"KubeDiskGuard/pkg/service"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -69,7 +69,7 @@ func TestEventListening(t *testing.T) {
 	cfg.ExcludeKeywords = []string{"pause", "istio-proxy"}
 
 	// 创建服务
-	svc, err := service.NewIOPSLimitService(cfg)
+	svc, err := service.NewKubeDiskGuardService(cfg)
 	if err != nil {
 		t.Skipf("Skipping test: failed to create service: %v", err)
 	}
@@ -107,22 +107,58 @@ func TestEventListening(t *testing.T) {
 }
 
 func TestParseIopsLimitFromAnnotations(t *testing.T) {
-	defaultLimit := 500
 	cases := []struct {
-		name   string
-		ann    map[string]string
-		expect int
+		name     string
+		ann      map[string]string
+		defRead  int
+		defWrite int
+		expectR  int
+		expectW  int
 	}{
-		{"no annotation", map[string]string{}, 500},
-		{"valid annotation", map[string]string{"iops-limit/limit": "1000"}, 1000},
-		{"invalid annotation", map[string]string{"iops-limit/limit": "abc"}, 500},
-		{"zero annotation", map[string]string{"iops-limit/limit": "0"}, 500},
+		{"no annotation", map[string]string{}, 100, 200, 100, 200},
+		{"read-iops only", map[string]string{"iops-limit/read-iops": "1234"}, 100, 200, 1234, 200},
+		{"write-iops only", map[string]string{"iops-limit/write-iops": "5678"}, 100, 200, 100, 5678},
+		{"both read/write", map[string]string{"iops-limit/read-iops": "1234", "iops-limit/write-iops": "5678"}, 100, 200, 1234, 5678},
+		{"iops overrides", map[string]string{"iops-limit/iops": "9999"}, 100, 200, 9999, 9999},
+		{"all present, iops highest", map[string]string{"iops-limit/read-iops": "1234", "iops-limit/write-iops": "5678", "iops-limit/iops": "8888"}, 100, 200, 8888, 8888},
+		{"read-iops 0", map[string]string{"iops-limit/read-iops": "0"}, 100, 200, 0, 200},
+		{"write-iops 0", map[string]string{"iops-limit/write-iops": "0"}, 100, 200, 100, 0},
+		{"iops 0", map[string]string{"iops-limit/iops": "0"}, 100, 200, 0, 0},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := service.ParseIopsLimitFromAnnotations(c.ann, defaultLimit)
-			if got != c.expect {
-				t.Errorf("parseIopsLimitFromAnnotations() = %d, want %d", got, c.expect)
+			r, w := service.ParseIopsLimitFromAnnotations(c.ann, c.defRead, c.defWrite)
+			if r != c.expectR || w != c.expectW {
+				t.Errorf("ParseIopsLimitFromAnnotations() = %d,%d, want %d,%d", r, w, c.expectR, c.expectW)
+			}
+		})
+	}
+}
+
+func TestParseBpsLimitFromAnnotations(t *testing.T) {
+	cases := []struct {
+		name     string
+		ann      map[string]string
+		defRead  int
+		defWrite int
+		expectR  int
+		expectW  int
+	}{
+		{"no annotation", map[string]string{}, 100, 200, 100, 200},
+		{"read-bps only", map[string]string{"iops-limit/read-bps": "1234"}, 100, 200, 1234, 200},
+		{"write-bps only", map[string]string{"iops-limit/write-bps": "5678"}, 100, 200, 100, 5678},
+		{"both read/write", map[string]string{"iops-limit/read-bps": "1234", "iops-limit/write-bps": "5678"}, 100, 200, 1234, 5678},
+		{"bps overrides", map[string]string{"iops-limit/bps": "9999"}, 100, 200, 9999, 9999},
+		{"all present, bps highest", map[string]string{"iops-limit/read-bps": "1234", "iops-limit/write-bps": "5678", "iops-limit/bps": "8888"}, 100, 200, 8888, 8888},
+		{"read-bps 0", map[string]string{"iops-limit/read-bps": "0"}, 100, 200, 0, 200},
+		{"write-bps 0", map[string]string{"iops-limit/write-bps": "0"}, 100, 200, 100, 0},
+		{"bps 0", map[string]string{"iops-limit/bps": "0"}, 100, 200, 0, 0},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			r, w := service.ParseBpsLimitFromAnnotations(c.ann, c.defRead, c.defWrite)
+			if r != c.expectR || w != c.expectW {
+				t.Errorf("ParseBpsLimitFromAnnotations() = %d,%d, want %d,%d", r, w, c.expectR, c.expectW)
 			}
 		})
 	}
@@ -132,51 +168,9 @@ type fakeRuntime struct {
 	containers []*container.ContainerInfo
 }
 
-func (f *fakeRuntime) GetContainers() ([]*container.ContainerInfo, error)           { return f.containers, nil }
 func (f *fakeRuntime) GetContainerByID(id string) (*container.ContainerInfo, error) { return nil, nil }
 func (f *fakeRuntime) ProcessContainer(c *container.ContainerInfo) error            { return nil }
 func (f *fakeRuntime) Close() error                                                 { return nil }
-func (f *fakeRuntime) GetContainersByPod(ns, name string) ([]*container.ContainerInfo, error) {
-	var result []*container.ContainerInfo
-	for _, c := range f.containers {
-		if c.Annotations["io.kubernetes.pod.namespace"] == ns && c.Annotations["io.kubernetes.pod.name"] == name {
-			result = append(result, c)
-		}
-	}
-	return result, nil
-}
-func (f *fakeRuntime) SetIOPSLimit(c *container.ContainerInfo, i int) error {
-	c.Name = "set"
-	return nil
-}
-
-func TestGetContainersByPod(t *testing.T) {
-	containers := []*container.ContainerInfo{
-		{ID: "1", Annotations: map[string]string{"io.kubernetes.pod.namespace": "default", "io.kubernetes.pod.name": "nginx"}},
-		{ID: "2", Annotations: map[string]string{"io.kubernetes.pod.namespace": "kube-system", "io.kubernetes.pod.name": "coredns"}},
-		{ID: "3", Annotations: map[string]string{"io.kubernetes.pod.namespace": "default", "io.kubernetes.pod.name": "nginx"}},
-	}
-	rt := &fakeRuntime{containers: containers}
-	found, err := rt.GetContainersByPod("default", "nginx")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(found) != 2 {
-		t.Errorf("expected 2 containers, got %d", len(found))
-	}
-}
-
-func TestSetIOPSLimit(t *testing.T) {
-	ci := &container.ContainerInfo{ID: "1", Name: "test"}
-	rt := &fakeRuntime{}
-	err := rt.SetIOPSLimit(ci, 1000)
-	if err != nil {
-		t.Errorf("SetIOPSLimit error: %v", err)
-	}
-	if ci.Name != "set" {
-		t.Errorf("SetIOPSLimit did not set name as expected")
-	}
-}
 
 func TestProcessExistingContainersWithPodAnnotations(t *testing.T) {
 	// 获取测试配置
@@ -187,7 +181,7 @@ func TestProcessExistingContainersWithPodAnnotations(t *testing.T) {
 	cfg.ExcludeKeywords = []string{"pause", "istio-proxy"}
 
 	// 创建服务
-	svc, err := service.NewIOPSLimitService(cfg)
+	svc, err := service.NewKubeDiskGuardService(cfg)
 	if err != nil {
 		t.Skipf("Skipping test: failed to create service: %v", err)
 	}
@@ -209,7 +203,7 @@ func TestProcessExistingContainersWithPodAnnotations(t *testing.T) {
 func TestExtractPodInfoFromContainer(t *testing.T) {
 	// 创建测试服务实例
 	cfg := config.GetDefaultConfig()
-	svc, err := service.NewIOPSLimitService(cfg)
+	svc, err := service.NewKubeDiskGuardService(cfg)
 	if err != nil {
 		t.Skipf("Skipping test: failed to create service: %v", err)
 	}
@@ -343,7 +337,7 @@ func TestResetAllContainersIOPSLimit(t *testing.T) {
 		},
 	}
 	mockKC := &mockKubeClient{pods: pods}
-	svc, err := service.NewIOPSLimitServiceWithKubeClient(cfg, mockKC)
+	svc, err := service.NewKubeDiskGuardServiceWithKubeClient(cfg, mockKC)
 	if err != nil {
 		t.Fatalf("Failed to create service: %v", err)
 	}
@@ -410,6 +404,17 @@ func TestShouldProcessPod(t *testing.T) {
 }
 
 // mockRuntime 用于测试SetIOPSLimit和ResetIOPSLimit调用情况
+// type mockRuntime struct {
+// 	setCount    int
+// 	resetCount  int
+// 	lastSetID   string
+// 	lastSetVal  int
+// 	lastResetID string
+// }
+// func (m *mockRuntime) GetContainerByID(id string) (*container.ContainerInfo, error) { return nil, nil }
+// func (m *mockRuntime) ProcessContainer(c *container.ContainerInfo) error  { return nil }
+// func (m *mockRuntime) Close() error                                       { return nil }
+
 type mockRuntime struct {
 	setCount    int
 	resetCount  int
@@ -511,7 +516,7 @@ func parseRuntimeIDForTest(k8sID string) string {
 func TestShouldProcessPod_StartedField(t *testing.T) {
 	cfg := config.GetDefaultConfig()
 	mockKC := &mockKubeClient{pods: nil}
-	svc, err := service.NewIOPSLimitServiceWithKubeClient(cfg, mockKC)
+	svc, err := service.NewKubeDiskGuardServiceWithKubeClient(cfg, mockKC)
 	if err != nil {
 		t.Fatalf("Failed to create service: %v", err)
 	}

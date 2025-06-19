@@ -1,7 +1,7 @@
 package service
 
 import (
-	"iops-limit-service/pkg/config"
+	"KubeDiskGuard/pkg/config"
 	"testing"
 )
 
@@ -20,7 +20,7 @@ func TestShouldSkipContainer(t *testing.T) {
 		{"skip by suffix", "nginx-proxy", "nginx-proxy", []string{"proxy"}, true},
 		{"skip by prefix", "istio-proxy", "istio-proxy", []string{"istio"}, true},
 	}
-	svc := &IOPSLimitService{config: &config.Config{}}
+	svc := &KubeDiskGuardService{config: &config.Config{}}
 	for _, tt := range tests {
 		svc.config.ExcludeKeywords = tt.keywords
 		result := svc.ShouldSkipContainer(tt.image, tt.cname)

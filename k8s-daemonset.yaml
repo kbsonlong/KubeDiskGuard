@@ -1,22 +1,22 @@
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
-  name: iops-limit-service
+  name: KubeDiskGuard
   namespace: kube-system
   labels:
-    app: iops-limit-service
+    app: KubeDiskGuard
 spec:
   selector:
     matchLabels:
-      app: iops-limit-service
+      app: KubeDiskGuard
   template:
     metadata:
       labels:
-        app: iops-limit-service
+        app: KubeDiskGuard
     spec:
       hostPID: true
       containers:
-      - name: iops-limit-service
+      - name: KubeDiskGuard
         image: registry.kbsonlong.com/iops-limit-service:latest
         imagePullPolicy: Always
         securityContext:
@@ -69,7 +69,7 @@ spec:
             command:
             - /bin/sh
             - -c
-            - "ps aux | grep iops-limit-service | grep -v grep"
+            - "ps aux | grep KubeDiskGuard | grep -v grep"
           initialDelaySeconds: 30
           periodSeconds: 10
       volumes:
@@ -100,19 +100,19 @@ spec:
         ip: 10.90.210.153
       imagePullSecrets:
       - name: zj-repo-sg
-      serviceAccount: iops-limit-service
-      serviceAccountName: iops-limit-service
+      serviceAccount: KubeDiskGuard
+      serviceAccountName: KubeDiskGuard
 ---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: iops-limit-service
+  name: KubeDiskGuard
   namespace: kube-system
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: iops-limit-service
+  name: KubeDiskGuard
 rules:
 - apiGroups: [""]
   resources: ["pods"]
@@ -124,12 +124,12 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: iops-limit-service
+  name: KubeDiskGuard
 subjects:
 - kind: ServiceAccount
-  name: iops-limit-service
+  name: KubeDiskGuard
   namespace: kube-system
 roleRef:
   kind: ClusterRole
-  name: iops-limit-service
+  name: KubeDiskGuard
   apiGroup: rbac.authorization.k8s.io 

@@ -1,4 +1,4 @@
-module iops-limit-service
+module KubeDiskGuard
 
 go 1.21
 
