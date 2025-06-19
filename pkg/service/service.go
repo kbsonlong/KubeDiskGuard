@@ -117,17 +117,24 @@ func (s *IOPSLimitService) processPodContainers(pod corev1.Pod, iopsLimit int) {
 			log.Printf("Skip IOPS limit for container %s (excluded by keyword)", containerInfo.ID)
 			continue
 		}
-		if err := s.runtime.SetIOPSLimit(containerInfo, iopsLimit); err != nil {
-			log.Printf("Failed to set IOPS limit for container %s: %v", containerInfo.ID, err)
+		if iopsLimit > 0 {
+			if err := s.runtime.SetIOPSLimit(containerInfo, iopsLimit); err != nil {
+				log.Printf("Failed to set IOPS limit for container %s: %v", containerInfo.ID, err)
+			} else {
+				log.Printf("Applied IOPS limit for container %s (pod: %s/%s): %d", containerInfo.ID, pod.Namespace, pod.Name, iopsLimit)
+			}
 		} else {
-			log.Printf("Applied IOPS limit for container %s (pod: %s/%s): %d", containerInfo.ID, pod.Namespace, pod.Name, iopsLimit)
+			if err := s.runtime.ResetIOPSLimit(containerInfo); err != nil {
+				log.Printf("Failed to reset IOPS limit for container %s: %v", containerInfo.ID, err)
+			} else {
+				log.Printf("Reset IOPS limit for container %s (pod: %s/%s)", containerInfo.ID, pod.Namespace, pod.Name)
+			}
 		}
 	}
 }
 
 // ShouldProcessPod 判断Pod是否需要处理（命名空间、labelSelector过滤）
 func (s *IOPSLimitService) ShouldProcessPod(pod corev1.Pod) bool {
-	// todo Phase is Running, but container not Running
 	if pod.Status.Phase != corev1.PodRunning {
 		return false
 	}
@@ -139,6 +146,14 @@ func (s *IOPSLimitService) ShouldProcessPod(pod corev1.Pod) bool {
 	if s.config.ExcludeLabelSelector != "" {
 		selector, err := labels.Parse(s.config.ExcludeLabelSelector)
 		if err == nil && selector.Matches(labels.Set(pod.Labels)) {
+			return false
+		}
+	}
+	// 新逻辑：所有业务容器的Started字段必须为true（为nil视为false）
+	// 启动探针通过之后，Started字段才会被设置为true
+	for _, cs := range pod.Status.ContainerStatuses {
+		// if cs.State.Running == nil {
+		if cs.Started == nil || !*cs.Started {
 			return false
 		}
 	}
@@ -306,15 +321,6 @@ func (s *IOPSLimitService) ResetAllContainersIOPSLimit() error {
 		}
 	}
 	return nil
-}
-
-// ResetOneContainerIOPSLimit 解除指定容器的IOPS限速
-func (s *IOPSLimitService) ResetOneContainerIOPSLimit(containerID string) error {
-	containerInfo, err := s.runtime.GetContainerByID(containerID)
-	if err != nil {
-		return err
-	}
-	return s.runtime.ResetIOPSLimit(containerInfo)
 }
 
 // 新增：支持注入mock kubeclient

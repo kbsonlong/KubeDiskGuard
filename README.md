@@ -294,4 +294,6 @@ env:
 
 ---
 
-（其余内容保持不变...） 
+## 变更历史
+
+[CHANGELOG.md](./docs/CHANGELOG.md)

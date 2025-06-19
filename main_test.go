@@ -353,21 +353,6 @@ func TestResetAllContainersIOPSLimit(t *testing.T) {
 	}
 }
 
-func TestResetOneContainerIOPSLimit(t *testing.T) {
-	cfg := config.GetDefaultConfig()
-	cfg.ContainerRuntime = "docker"
-	cfg.DataMount = "/data"
-	mockKC := &mockKubeClient{pods: nil}
-	svc, err := service.NewIOPSLimitServiceWithKubeClient(cfg, mockKC)
-	if err != nil {
-		t.Fatalf("Failed to create service: %v", err)
-	}
-	err = svc.ResetOneContainerIOPSLimit("cid1")
-	if err != nil {
-		t.Logf("ResetOneContainerIOPSLimit error (may be expected if no such container): %v", err)
-	}
-}
-
 // 独立的过滤逻辑函数，便于测试
 func shouldProcessPodForTest(pod corev1.Pod, excludeNamespaces []string, excludeLabelSelector string) bool {
 	if pod.Status.Phase != corev1.PodRunning {
@@ -419,6 +404,167 @@ func TestShouldProcessPod(t *testing.T) {
 			got := shouldProcessPodForTest(c.pod, excludeNamespaces, excludeLabelSelector)
 			if got != c.expect {
 				t.Errorf("shouldProcessPodForTest() = %v, want %v", got, c.expect)
+			}
+		})
+	}
+}
+
+// mockRuntime 用于测试SetIOPSLimit和ResetIOPSLimit调用情况
+type mockRuntime struct {
+	setCount    int
+	resetCount  int
+	lastSetID   string
+	lastSetVal  int
+	lastResetID string
+}
+
+func (m *mockRuntime) GetContainerByID(id string) (*container.ContainerInfo, error) {
+	return &container.ContainerInfo{ID: id, Image: "nginx", Name: "nginx"}, nil
+}
+func (m *mockRuntime) SetIOPSLimit(c *container.ContainerInfo, iops int) error {
+	m.setCount++
+	m.lastSetID = c.ID
+	m.lastSetVal = iops
+	return nil
+}
+func (m *mockRuntime) ResetIOPSLimit(c *container.ContainerInfo) error {
+	m.resetCount++
+	m.lastResetID = c.ID
+	return nil
+}
+
+// 其它接口用空实现
+func (m *mockRuntime) GetContainers() ([]*container.ContainerInfo, error) { return nil, nil }
+func (m *mockRuntime) ProcessContainer(c *container.ContainerInfo) error  { return nil }
+func (m *mockRuntime) Close() error                                       { return nil }
+func (m *mockRuntime) GetContainersByPod(ns, name string) ([]*container.ContainerInfo, error) {
+	return nil, nil
+}
+
+func TestProcessPodContainers_IOPSLimitOrReset(t *testing.T) {
+	mockRt := &mockRuntime{}
+	pod := corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "mypod"},
+		Status: corev1.PodStatus{
+			Phase:             corev1.PodRunning,
+			ContainerStatuses: []corev1.ContainerStatus{{ContainerID: "docker://cid1"}},
+		},
+	}
+	shouldSkip := func(image, name string) bool { return false }
+
+	// case1: 注解为正数，应该调用SetIOPSLimit
+	processPodContainersForTest(pod, 1000, mockRt, shouldSkip)
+	if mockRt.setCount != 1 || mockRt.lastSetID != "cid1" || mockRt.lastSetVal != 1000 {
+		t.Errorf("SetIOPSLimit not called as expected, got setCount=%d, lastSetID=%s, lastSetVal=%d", mockRt.setCount, mockRt.lastSetID, mockRt.lastSetVal)
+	}
+	if mockRt.resetCount != 0 {
+		t.Errorf("ResetIOPSLimit should not be called, got %d", mockRt.resetCount)
+	}
+
+	// case2: 注解为0，应该调用ResetIOPSLimit
+	mockRt.setCount, mockRt.resetCount = 0, 0
+	processPodContainersForTest(pod, 0, mockRt, shouldSkip)
+	if mockRt.resetCount != 1 || mockRt.lastResetID != "cid1" {
+		t.Errorf("ResetIOPSLimit not called as expected, got resetCount=%d, lastResetID=%s", mockRt.resetCount, mockRt.lastResetID)
+	}
+	if mockRt.setCount != 0 {
+		t.Errorf("SetIOPSLimit should not be called, got %d", mockRt.setCount)
+	}
+}
+
+// processPodContainersForTest 测试用等价逻辑
+func processPodContainersForTest(pod corev1.Pod, iopsLimit int, rt *mockRuntime, shouldSkip func(image, name string) bool) {
+	for _, cs := range pod.Status.ContainerStatuses {
+		containerID := parseRuntimeIDForTest(cs.ContainerID)
+		if containerID == "" {
+			continue
+		}
+		containerInfo, err := rt.GetContainerByID(containerID)
+		if err != nil {
+			continue
+		}
+		if shouldSkip(containerInfo.Image, containerInfo.Name) {
+			continue
+		}
+		if iopsLimit > 0 {
+			rt.SetIOPSLimit(containerInfo, iopsLimit)
+		} else {
+			rt.ResetIOPSLimit(containerInfo)
+		}
+	}
+}
+
+// parseRuntimeIDForTest 测试用解析函数
+func parseRuntimeIDForTest(k8sID string) string {
+	if k8sID == "" {
+		return ""
+	}
+	if idx := len("docker://"); len(k8sID) > idx && k8sID[:idx] == "docker://" {
+		return k8sID[idx:]
+	}
+	if idx := len("containerd://"); len(k8sID) > idx && k8sID[:idx] == "containerd://" {
+		return k8sID[idx:]
+	}
+	return k8sID
+}
+
+func TestShouldProcessPod_StartedField(t *testing.T) {
+	cfg := config.GetDefaultConfig()
+	mockKC := &mockKubeClient{pods: nil}
+	svc, err := service.NewIOPSLimitServiceWithKubeClient(cfg, mockKC)
+	if err != nil {
+		t.Fatalf("Failed to create service: %v", err)
+	}
+	trueVal := true
+	falseVal := false
+
+	cases := []struct {
+		name   string
+		pod    corev1.Pod
+		expect bool
+	}{
+		{"all started true", corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Namespace: "default"},
+			Status: corev1.PodStatus{
+				Phase:             corev1.PodRunning,
+				ContainerStatuses: []corev1.ContainerStatus{{Started: &trueVal}, {Started: &trueVal}},
+			},
+		}, true},
+		{"one started false", corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Namespace: "default"},
+			Status: corev1.PodStatus{
+				Phase:             corev1.PodRunning,
+				ContainerStatuses: []corev1.ContainerStatus{{Started: &trueVal}, {Started: &falseVal}},
+			},
+		}, false},
+		{"one started nil", corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Namespace: "default"},
+			Status: corev1.PodStatus{
+				Phase:             corev1.PodRunning,
+				ContainerStatuses: []corev1.ContainerStatus{{Started: &trueVal}, {Started: nil}},
+			},
+		}, false},
+		{"all started nil", corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Namespace: "default"},
+			Status: corev1.PodStatus{
+				Phase:             corev1.PodRunning,
+				ContainerStatuses: []corev1.ContainerStatus{{Started: nil}, {Started: nil}},
+			},
+		}, false},
+		{"not running phase", corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Namespace: "default"},
+			Status: corev1.PodStatus{
+				Phase:             corev1.PodPending,
+				ContainerStatuses: []corev1.ContainerStatus{{Started: &trueVal}},
+			},
+		}, false},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := svc.ShouldProcessPod(c.pod)
+			if got != c.expect {
+				t.Errorf("ShouldProcessPod() = %v, want %v", got, c.expect)
 			}
 		})
 	}
