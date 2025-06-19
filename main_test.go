@@ -9,6 +9,9 @@ import (
 	"iops-limit-service/pkg/container"
 	"iops-limit-service/pkg/detector"
 	"iops-limit-service/pkg/service"
+
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 func TestDetectRuntime(t *testing.T) {
@@ -343,5 +346,48 @@ func TestResetOneContainerIOPSLimit(t *testing.T) {
 	// 允许失败（如找不到容器），只要不panic即可
 	if err != nil {
 		t.Logf("ResetOneContainerIOPSLimit error (may be expected if no such container): %v", err)
+	}
+}
+
+func TestShouldProcessPod(t *testing.T) {
+	cfg := config.GetDefaultConfig()
+	cfg.ExcludeNamespaces = []string{"kube-system", "monitoring"}
+	cfg.ExcludeLabelSelector = "app=skipme"
+
+	svc, err := service.NewIOPSLimitService(cfg)
+	if err != nil {
+		t.Fatalf("Failed to create service: %v", err)
+	}
+
+	cases := []struct {
+		name   string
+		pod    corev1.Pod
+		expect bool
+	}{
+		{"running, ns not excluded, label not excluded", corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Namespace: "default", Labels: map[string]string{"app": "test"}},
+			Status:     corev1.PodStatus{Phase: corev1.PodRunning},
+		}, true},
+		{"running, ns excluded", corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Namespace: "kube-system", Labels: map[string]string{"app": "test"}},
+			Status:     corev1.PodStatus{Phase: corev1.PodRunning},
+		}, false},
+		{"not running", corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Namespace: "default", Labels: map[string]string{"app": "test"}},
+			Status:     corev1.PodStatus{Phase: corev1.PodPending},
+		}, false},
+		{"running, label excluded", corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Namespace: "default", Labels: map[string]string{"app": "skipme"}},
+			Status:     corev1.PodStatus{Phase: corev1.PodRunning},
+		}, false},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := svc.ShouldProcessPod(c.pod)
+			if got != c.expect {
+				t.Errorf("ShouldProcessPod() = %v, want %v", got, c.expect)
+			}
+		})
 	}
 }

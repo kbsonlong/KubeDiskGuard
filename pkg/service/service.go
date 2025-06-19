@@ -125,6 +125,25 @@ func (s *IOPSLimitService) processPodContainers(pod corev1.Pod, iopsLimit int) {
 	}
 }
 
+// ShouldProcessPod 判断Pod是否需要处理（命名空间、labelSelector过滤）
+func (s *IOPSLimitService) ShouldProcessPod(pod corev1.Pod) bool {
+	if pod.Status.Phase != corev1.PodRunning {
+		return false
+	}
+	for _, ns := range s.config.ExcludeNamespaces {
+		if pod.Namespace == ns {
+			return false
+		}
+	}
+	if s.config.ExcludeLabelSelector != "" {
+		selector, err := labels.Parse(s.config.ExcludeLabelSelector)
+		if err == nil && selector.Matches(labels.Set(pod.Labels)) {
+			return false
+		}
+	}
+	return true
+}
+
 // ProcessExistingContainers 处理现有容器（以Pod为主索引）
 func (s *IOPSLimitService) ProcessExistingContainers() error {
 	pods, err := s.getNodePods()
@@ -135,26 +154,8 @@ func (s *IOPSLimitService) ProcessExistingContainers() error {
 
 	for _, pod := range pods {
 		fmt.Printf(pod.Name)
-		if pod.Status.Phase != corev1.PodRunning {
+		if !s.ShouldProcessPod(pod) {
 			continue
-		}
-		// Pod维度过滤：命名空间
-		excluded := false
-		for _, ns := range s.config.ExcludeNamespaces {
-			if pod.Namespace == ns {
-				excluded = true
-				break
-			}
-		}
-		if excluded {
-			continue
-		}
-		// Pod维度过滤：labelSelector
-		if s.config.ExcludeLabelSelector != "" {
-			selector, err := labels.Parse(s.config.ExcludeLabelSelector)
-			if err == nil && selector.Matches(labels.Set(pod.Labels)) {
-				continue
-			}
 		}
 		// 解析注解
 		iopsLimit := ParseIopsLimitFromAnnotations(pod.Annotations, s.config.ContainerIOPSLimit)
@@ -201,7 +202,7 @@ func (s *IOPSLimitService) WatchPodEvents() error {
 		key := pod.Namespace + "/" + pod.Name
 		switch event.Type {
 		case watch.Modified:
-			if pod.Status.Phase != corev1.PodRunning {
+			if !s.ShouldProcessPod(*pod) {
 				continue
 			}
 			old := podAnnotations[key]

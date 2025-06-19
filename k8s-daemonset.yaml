@@ -29,7 +29,9 @@ spec:
         - name: DATA_MOUNT
           value: "/data"
         - name: EXCLUDE_KEYWORDS
-          value: "pause,istio-proxy,psmdb,kube-system,koordinator,apisix"
+          value: "pause,istio-proxy,psmdb,koordinator,apisix"
+        - name: EXCLUDE_NAMESPACES
+          value: "kube-system"
         - name: CONTAINER_RUNTIME
           value: "auto"
         - name: CGROUP_VERSION
@@ -79,7 +81,7 @@ spec:
       # 根据运行时设置 `socket` 地址
       - name: socket
         hostPath:
-          path: /run/containerd/containerd.sock
+          path: /var/run/docker/containerd/containerd.sock
       - name: proc
         hostPath:
           path: /proc

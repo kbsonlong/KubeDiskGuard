@@ -1,7 +1,7 @@
 # 变量定义
 IMAGE_NAME ?= iops-limit-service
 IMAGE_TAG ?= latest
-REGISTRY ?= your-registry
+REGISTRY ?= registry-sg.inshopline.com/yy_default
 FULL_IMAGE_NAME = $(REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG)
 
 # Go 相关变量
@@ -24,6 +24,12 @@ build-local: ## 构建本地二进制文件
 	@echo "构建本地二进制文件..."
 	go build -o $(BINARY_NAME) $(MAIN_FILE)
 
+.PHONY: build-multiarch
+build-multiarch: ## 多架构本地编译
+	@echo "多架构本地编译..."
+	GOOS=linux GOARCH=amd64 go build -o iops-limit-service-amd64 main.go
+	GOOS=linux GOARCH=arm64 go build -o iops-limit-service-arm64 main.go
+
 .PHONY: docker-build
 docker-build: ## 构建 Docker 镜像
 	@echo "构建 Docker 镜像: $(FULL_IMAGE_NAME)"
@@ -36,6 +42,11 @@ docker-push: ## 推送 Docker 镜像到仓库
 
 .PHONY: docker-build-push
 docker-build-push: docker-build docker-push ## 构建并推送 Docker 镜像
+
+.PHONY: docker-buildx
+docker-buildx: ## 多架构Docker镜像构建
+	@echo "使用buildx构建多架构镜像..."
+	docker buildx build --platform linux/amd64,linux/arm64 -t $(FULL_IMAGE_NAME) --push .
 
 .PHONY: run
 run: build-local ## 本地运行服务
