@@ -63,7 +63,7 @@ func NewIOPSLimitService(config *config.Config) (*IOPSLimitService, error) {
 	// 初始化kubeClient
 	nodeName := os.Getenv("NODE_NAME")
 	if nodeName == "" {
-		nodeName, _ = os.Hostname()
+		return nil, fmt.Errorf("NODE_NAME env is required")
 	}
 	service.kubeClient, err = kubeclient.NewKubeClient(nodeName, config.KubeConfigPath)
 	if err != nil {
@@ -134,6 +134,7 @@ func (s *IOPSLimitService) ProcessExistingContainers() error {
 	}
 
 	for _, pod := range pods {
+		fmt.Printf(pod.Name)
 		if pod.Status.Phase != corev1.PodRunning {
 			continue
 		}

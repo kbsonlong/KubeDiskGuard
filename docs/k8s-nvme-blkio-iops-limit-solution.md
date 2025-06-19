@@ -705,3 +705,9 @@ fi
 ```
 
 ---
+
+## 参考资料
+
+[IO Controller](https://facebookmicrosites.github.io/cgroup2/docs/io-controller.html)
+
+[linux 管理手册](https://docs.kernel.org/admin-guide/cgroup-v2.html)

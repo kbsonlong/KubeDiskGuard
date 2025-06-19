@@ -3,6 +3,7 @@ package kubeclient
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
@@ -21,17 +22,25 @@ import (
 
 // KubeClient 封装k8s client-go和kubelet API
 // 支持in-cluster、kubeconfig、kubelet API
+// 支持自定义CA、客户端证书、Token
 type KubeClient struct {
 	Clientset         *kubernetes.Clientset
 	NodeName          string
 	KubeletHost       string
 	KubeletPort       string
 	KubeletSkipVerify bool
+	KubeletCAPath     string
+	KubeletClientCert string
+	KubeletClientKey  string
+	KubeletTokenPath  string
 	SATokenPath       string
 }
 
-// NewKubeClient 创建KubeClient，优先in-cluster，失败则用kubeconfig
+// NewKubeClient 创建KubeClient，nodeName必须由参数传入
 func NewKubeClient(nodeName, kubeconfigPath string) (*KubeClient, error) {
+	if nodeName == "" {
+		return nil, fmt.Errorf("nodeName is required, please set NODE_NAME env")
+	}
 	var config *rest.Config
 	var err error
 
@@ -60,10 +69,6 @@ func NewKubeClient(nodeName, kubeconfigPath string) (*KubeClient, error) {
 		return nil, fmt.Errorf("failed to create kubernetes client: %v", err)
 	}
 
-	if nodeName == "" {
-		nodeName, _ = os.Hostname()
-	}
-
 	kubeletHost := os.Getenv("KUBELET_HOST")
 	if kubeletHost == "" {
 		kubeletHost = "localhost"
@@ -78,6 +83,11 @@ func NewKubeClient(nodeName, kubeconfigPath string) (*KubeClient, error) {
 	if v := os.Getenv("KUBELET_SA_TOKEN_PATH"); v != "" {
 		saTokenPath = v
 	}
+	// 新增：支持自定义CA、客户端证书、Token
+	caPath := os.Getenv("KUBELET_CA_PATH")
+	clientCert := os.Getenv("KUBELET_CLIENT_CERT_PATH")
+	clientKey := os.Getenv("KUBELET_CLIENT_KEY_PATH")
+	tokenPath := os.Getenv("KUBELET_TOKEN_PATH")
 
 	return &KubeClient{
 		Clientset:         clientset,
@@ -85,24 +95,53 @@ func NewKubeClient(nodeName, kubeconfigPath string) (*KubeClient, error) {
 		KubeletHost:       kubeletHost,
 		KubeletPort:       kubeletPort,
 		KubeletSkipVerify: kubeletSkipVerify,
+		KubeletCAPath:     caPath,
+		KubeletClientCert: clientCert,
+		KubeletClientKey:  clientKey,
+		KubeletTokenPath:  tokenPath,
 		SATokenPath:       saTokenPath,
 	}, nil
 }
 
-// GetNodePodsFromKubelet 使用kubelet API获取本节点Pod信息，支持ServiceAccount Token认证
+// GetNodePodsFromKubelet 使用kubelet API获取本节点Pod信息，支持ServiceAccount Token认证和自定义证书
 func (k *KubeClient) GetNodePodsFromKubelet() ([]corev1.Pod, error) {
 	kubeletURL := fmt.Sprintf("https://%s:%s/pods", k.KubeletHost, k.KubeletPort)
 
-	token, err := ioutil.ReadFile(k.SATokenPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read serviceaccount token: %v", err)
+	// 读取Token（可选）
+	token := ""
+	tokenPath := k.KubeletTokenPath
+	if tokenPath == "" {
+		tokenPath = k.SATokenPath
+	}
+	if tokenPath != "" {
+		b, err := ioutil.ReadFile(tokenPath)
+		if err == nil {
+			token = string(b)
+		}
+	}
+
+	// 构造TLS配置
+	tlsConfig := &tls.Config{
+		InsecureSkipVerify: k.KubeletSkipVerify,
+	}
+	if k.KubeletCAPath != "" {
+		caCert, err := ioutil.ReadFile(k.KubeletCAPath)
+		if err == nil {
+			caPool := x509.NewCertPool()
+			caPool.AppendCertsFromPEM(caCert)
+			tlsConfig.RootCAs = caPool
+		}
+	}
+	if k.KubeletClientCert != "" && k.KubeletClientKey != "" {
+		cert, err := tls.LoadX509KeyPair(k.KubeletClientCert, k.KubeletClientKey)
+		if err == nil {
+			tlsConfig.Certificates = []tls.Certificate{cert}
+		}
 	}
 
 	client := &http.Client{
 		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{
-				InsecureSkipVerify: k.KubeletSkipVerify,
-			},
+			TLSClientConfig: tlsConfig,
 		},
 		Timeout: 10 * time.Second,
 	}
@@ -112,7 +151,9 @@ func (k *KubeClient) GetNodePodsFromKubelet() ([]corev1.Pod, error) {
 		return nil, fmt.Errorf("failed to create request: %v", err)
 	}
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Authorization", "Bearer "+string(token))
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
 
 	resp, err := client.Do(req)
 	if err != nil {

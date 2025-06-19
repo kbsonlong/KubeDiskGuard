@@ -100,6 +100,7 @@ env:
 
 | 环境变量 | 默认值 | 说明 |
 |---------|--------|------|
+| `NODE_NAME` |  | 必须，节点名，建议通过Downward API注入 |
 | `CONTAINER_IOPS_LIMIT` | 500 | 单个容器的 IOPS 限制 |
 | `DATA_TOTAL_IOPS` | 3000 | 数据盘总 IOPS 限制 |
 | `DATA_MOUNT` | /data | 数据盘挂载点 |
@@ -113,6 +114,20 @@ env:
 | `CHECK_INTERVAL` | 30 | 检查间隔（秒） |
 | `KUBELET_HOST` | localhost | kubelet API 主机地址 |
 | `KUBELET_PORT` | 10250 | kubelet API 端口 |
+| `KUBELET_CA_PATH` |  | kubelet API CA证书路径 |
+| `KUBELET_CLIENT_CERT_PATH` |  | kubelet API客户端证书路径 |
+| `KUBELET_CLIENT_KEY_PATH` |  | kubelet API客户端私钥路径 |
+| `KUBELET_TOKEN_PATH` |  | kubelet API Token路径（本地调试可选） |
+| `KUBELET_SKIP_VERIFY` |  | kubelet API跳过验证 |
+
+#### DaemonSet注入节点名示例：
+```yaml
+env:
+  - name: NODE_NAME
+    valueFrom:
+      fieldRef:
+        fieldPath: spec.nodeName
+```
 
 ### 4. 快速开始
 
@@ -230,3 +245,58 @@ go test -v
 ## 许可证
 
 MIT License 
+
+## 本地开发与调试
+
+### 1. 必要环境变量
+
+- `NODE_NAME`：必须，节点名，建议通过 Downward API 注入
+- `KUBELET_HOST`、`KUBELET_PORT`：kubelet API 地址和端口，默认 localhost:10250
+- `KUBELET_SKIP_VERIFY`：本地调试可设为 true 跳过 TLS 校验
+- `KUBELET_CA_PATH`：kubelet API CA 证书路径（PEM，可选）
+- `KUBELET_CLIENT_CERT_PATH`/`KUBELET_CLIENT_KEY_PATH`：客户端证书/私钥（PEM，可选）
+- `KUBELET_TOKEN_PATH`：kubelet API Token 路径（本地调试可选，若不设置则不加 Authorization header）
+
+### 2. DaemonSet 注入节点名示例
+
+```yaml
+env:
+  - name: NODE_NAME
+    valueFrom:
+      fieldRef:
+        fieldPath: spec.nodeName
+```
+
+### 3. 本地调试典型用法
+
+- 若本地无 Token，可不设置 `KUBELET_TOKEN_PATH`，kubelet 需允许匿名访问或配置合适的 RBAC。
+- 如需安全访问本地 kubelet，可指定 CA、客户端证书、私钥：
+
+```yaml
+env:
+  - name: KUBELET_CA_PATH
+    value: "/etc/kubernetes/pki/kubelet-ca.pem"
+  - name: KUBELET_CLIENT_CERT_PATH
+    value: "/etc/kubernetes/pki/client.pem"
+  - name: KUBELET_CLIENT_KEY_PATH
+    value: "/etc/kubernetes/pki/client-key.pem"
+  - name: KUBELET_TOKEN_PATH
+    value: "/tmp/my-debug-token"
+  - name: KUBELET_SKIP_VERIFY
+    value: "true"
+```
+
+- 推荐本地开发时用 `KUBELET_SKIP_VERIFY=true`，生产环境建议配置 CA 证书和 Token。
+
+### 4. 典型调试场景
+
+- **本地无Token，跳过认证**：
+  - 只需设置 `KUBELET_HOST`、`KUBELET_PORT`、`KUBELET_SKIP_VERIFY=true`，不设置 `KUBELET_TOKEN_PATH`。
+- **本地有自定义Token**：
+  - 设置 `KUBELET_TOKEN_PATH` 指向本地 Token 文件。
+- **本地自签名证书**：
+  - 设置 `KUBELET_CA_PATH`，如有双向认证再加 `KUBELET_CLIENT_CERT_PATH` 和 `KUBELET_CLIENT_KEY_PATH`。
+
+---
+
+（其余内容保持不变...） 
