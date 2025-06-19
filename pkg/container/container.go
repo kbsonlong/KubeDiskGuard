@@ -23,4 +23,7 @@ type Runtime interface {
 
 	// 新增：动态设置IOPS限制
 	SetIOPSLimit(container *ContainerInfo, iopsLimit int) error
+
+	// ResetIOPSLimit 解除IOPS限制
+	ResetIOPSLimit(container *ContainerInfo) error
 }

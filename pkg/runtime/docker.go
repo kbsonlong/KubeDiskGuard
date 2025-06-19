@@ -126,3 +126,13 @@ func (d *DockerRuntime) SetIOPSLimit(container *container.ContainerInfo, iopsLim
 	cgroupPath := d.cgroup.BuildCgroupPath(container.ID, container.CgroupParent)
 	return d.cgroup.SetIOPSLimit(cgroupPath, majMin, iopsLimit)
 }
+
+// ResetIOPSLimit 解除IOPS限制
+func (d *DockerRuntime) ResetIOPSLimit(container *container.ContainerInfo) error {
+	majMin, err := device.GetMajMin(d.config.DataMount)
+	if err != nil {
+		return err
+	}
+	cgroupPath := d.cgroup.BuildCgroupPath(container.ID, container.CgroupParent)
+	return d.cgroup.ResetIOPSLimit(cgroupPath, majMin)
+}

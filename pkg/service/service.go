@@ -278,3 +278,37 @@ func (s *IOPSLimitService) Run() error {
 func (s *IOPSLimitService) getNodePods() ([]corev1.Pod, error) {
 	return s.kubeClient.ListNodePodsWithKubeletFirst()
 }
+
+// ResetAllContainersIOPSLimit 解除所有容器的IOPS限速
+func (s *IOPSLimitService) ResetAllContainersIOPSLimit() error {
+	pods, err := s.getNodePods()
+	if err != nil {
+		return err
+	}
+	for _, pod := range pods {
+		for _, cs := range pod.Status.ContainerStatuses {
+			containerID := parseRuntimeID(cs.ContainerID)
+			if containerID == "" {
+				continue
+			}
+			containerInfo, err := s.runtime.GetContainerByID(containerID)
+			if err != nil {
+				log.Printf("Failed to get container info for %s: %v", containerID, err)
+				continue
+			}
+			if err := s.runtime.ResetIOPSLimit(containerInfo); err != nil {
+				log.Printf("Failed to reset IOPS limit for container %s: %v", containerID, err)
+			}
+		}
+	}
+	return nil
+}
+
+// ResetOneContainerIOPSLimit 解除指定容器的IOPS限速
+func (s *IOPSLimitService) ResetOneContainerIOPSLimit(containerID string) error {
+	containerInfo, err := s.runtime.GetContainerByID(containerID)
+	if err != nil {
+		return err
+	}
+	return s.runtime.ResetIOPSLimit(containerInfo)
+}

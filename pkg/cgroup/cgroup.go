@@ -77,6 +77,31 @@ func (m *Manager) SetIOPSLimit(cgroupPath, majMin string, iopsLimit int) error {
 	return nil
 }
 
+// ResetIOPSLimit 解除IOPS限制
+func (m *Manager) ResetIOPSLimit(cgroupPath, majMin string) error {
+	if cgroupPath == "" || majMin == "" {
+		return fmt.Errorf("invalid cgroup path or major:minor")
+	}
+	if m.version == "v1" {
+		readFile := filepath.Join(cgroupPath, "blkio.throttle.read_iops_device")
+		writeFile := filepath.Join(cgroupPath, "blkio.throttle.write_iops_device")
+		if err := os.WriteFile(readFile, []byte(""), 0644); err != nil {
+			return fmt.Errorf("failed to reset read iops limit: %v", err)
+		}
+		if err := os.WriteFile(writeFile, []byte(""), 0644); err != nil {
+			return fmt.Errorf("failed to reset write iops limit: %v", err)
+		}
+		log.Printf("Reset IOPS limit at %s (v1)", majMin)
+	} else {
+		ioMaxFile := filepath.Join(cgroupPath, "io.max")
+		if err := os.WriteFile(ioMaxFile, []byte("default\n"), 0644); err != nil {
+			return fmt.Errorf("failed to reset io.max: %v", err)
+		}
+		log.Printf("Reset IOPS limit at %s (v2)", majMin)
+	}
+	return nil
+}
+
 // BuildCgroupPath 构建cgroup路径
 func (m *Manager) BuildCgroupPath(containerID, cgroupParent string) string {
 	if m.version == "v1" {

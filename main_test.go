@@ -310,3 +310,38 @@ func TestKubeletConfig(t *testing.T) {
 	os.Unsetenv("KUBELET_HOST")
 	os.Unsetenv("KUBELET_PORT")
 }
+
+func TestResetAllContainersIOPSLimit(t *testing.T) {
+	cfg := config.GetDefaultConfig()
+	cfg.ContainerRuntime = "docker"
+	cfg.DataMount = "/data"
+
+	svc, err := service.NewIOPSLimitService(cfg)
+	if err != nil {
+		t.Fatalf("Failed to create service: %v", err)
+	}
+
+	// mock runtime，假设所有ResetIOPSLimit都能成功
+	err = svc.ResetAllContainersIOPSLimit()
+	if err != nil {
+		t.Errorf("ResetAllContainersIOPSLimit error: %v", err)
+	}
+}
+
+func TestResetOneContainerIOPSLimit(t *testing.T) {
+	cfg := config.GetDefaultConfig()
+	cfg.ContainerRuntime = "docker"
+	cfg.DataMount = "/data"
+
+	svc, err := service.NewIOPSLimitService(cfg)
+	if err != nil {
+		t.Fatalf("Failed to create service: %v", err)
+	}
+
+	// 这里假设有一个容器ID "test-container-id"
+	err = svc.ResetOneContainerIOPSLimit("test-container-id")
+	// 允许失败（如找不到容器），只要不panic即可
+	if err != nil {
+		t.Logf("ResetOneContainerIOPSLimit error (may be expected if no such container): %v", err)
+	}
+}

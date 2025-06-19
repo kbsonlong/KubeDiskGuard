@@ -117,3 +117,13 @@ func (c *ContainerdRuntime) SetIOPSLimit(container *container.ContainerInfo, iop
 	cgroupPath := c.cgroup.FindCgroupPath(container.ID)
 	return c.cgroup.SetIOPSLimit(cgroupPath, majMin, iopsLimit)
 }
+
+// ResetIOPSLimit 解除IOPS限制
+func (c *ContainerdRuntime) ResetIOPSLimit(container *container.ContainerInfo) error {
+	majMin, err := device.GetMajMin(c.config.DataMount)
+	if err != nil {
+		return err
+	}
+	cgroupPath := c.cgroup.FindCgroupPath(container.ID)
+	return c.cgroup.ResetIOPSLimit(cgroupPath, majMin)
+}
