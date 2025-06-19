@@ -27,94 +27,6 @@ func TestDetectCgroupVersion(t *testing.T) {
 	t.Logf("Detected cgroup version: %s", version)
 }
 
-func TestShouldSkip(t *testing.T) {
-	tests := []struct {
-		name          string
-		image         string
-		containerName string
-		keywords      []string
-		namespaces    []string
-		regexps       []string
-		labelSelector string
-		expected      bool
-	}{
-		{
-			name:          "should skip pause container",
-			image:         "k8s.gcr.io/pause:3.2",
-			containerName: "k8s_POD_test-pod",
-			keywords:      []string{"pause"},
-			namespaces:    nil,
-			regexps:       nil,
-			labelSelector: "",
-			expected:      true,
-		},
-		{
-			name:          "should not skip business container",
-			image:         "nginx:latest",
-			containerName: "nginx-container",
-			keywords:      []string{"pause", "istio-proxy"},
-			namespaces:    nil,
-			regexps:       nil,
-			labelSelector: "",
-			expected:      false,
-		},
-		{
-			name:          "should skip istio-proxy",
-			image:         "docker.io/istio/proxyv2:1.12.0",
-			containerName: "istio-proxy",
-			keywords:      []string{"pause", "istio-proxy"},
-			namespaces:    nil,
-			regexps:       nil,
-			labelSelector: "",
-			expected:      true,
-		},
-		{
-			name:          "should skip by namespace",
-			image:         "nginx:latest",
-			containerName: "nginx-container",
-			keywords:      nil,
-			namespaces:    []string{"kube-system"},
-			regexps:       nil,
-			labelSelector: "",
-			expected:      true,
-		},
-		{
-			name:          "should skip by regexp",
-			image:         "istio-proxy:latest",
-			containerName: "istio-proxy",
-			keywords:      nil,
-			namespaces:    nil,
-			regexps:       []string{"^istio-.*$"},
-			labelSelector: "",
-			expected:      true,
-		},
-		{
-			name:          "should skip by labelSelector",
-			image:         "nginx:latest",
-			containerName: "nginx-container",
-			keywords:      nil,
-			namespaces:    nil,
-			regexps:       nil,
-			labelSelector: "app=nginx",
-			expected:      true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			containerInfo := &container.ContainerInfo{
-				Image:       tt.image,
-				Name:        tt.containerName,
-				Annotations: map[string]string{"app": "nginx", "io.kubernetes.pod.namespace": "kube-system"},
-			}
-			result := container.ShouldSkip(containerInfo, tt.keywords, tt.namespaces, tt.regexps, tt.labelSelector)
-			if result != tt.expected {
-				t.Errorf("shouldSkip() = %v, want %v", result, tt.expected)
-			}
-		})
-	}
-}
-
 func TestGetDefaultConfig(t *testing.T) {
 	cfg := config.GetDefaultConfig()
 	if cfg == nil {
@@ -141,19 +53,6 @@ func TestConfigToJSON(t *testing.T) {
 		t.Error("ToJSON should not return empty string")
 	}
 	t.Logf("Config JSON: %s", jsonStr)
-}
-
-func BenchmarkShouldSkip(b *testing.B) {
-	containerInfo := &container.ContainerInfo{
-		Image: "nginx:latest",
-		Name:  "nginx-container",
-	}
-	keywords := []string{"pause", "istio-proxy", "psmdb", "kube-system"}
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		container.ShouldSkip(containerInfo, keywords, nil, nil, "")
-	}
 }
 
 func TestEventListening(t *testing.T) {

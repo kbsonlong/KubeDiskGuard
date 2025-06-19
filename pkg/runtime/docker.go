@@ -63,9 +63,8 @@ func (d *DockerRuntime) GetContainers() ([]*container.ContainerInfo, error) {
 			ci.Annotations[k] = v
 		}
 
-		if !container.ShouldSkip(ci, d.config.ExcludeKeywords, d.config.ExcludeNamespaces, d.config.ExcludeRegexps, d.config.ExcludeLabelSelector) {
-			containerInfos = append(containerInfos, ci)
-		}
+		// 过滤已在service层完成，这里直接append
+		containerInfos = append(containerInfos, ci)
 	}
 
 	return containerInfos, nil
@@ -116,23 +115,6 @@ func (d *DockerRuntime) Close() error {
 		return d.client.Close()
 	}
 	return nil
-}
-
-// GetContainersByPod 通过Pod信息查找本地容器
-func (d *DockerRuntime) GetContainersByPod(namespace, podName string) ([]*container.ContainerInfo, error) {
-	containers, err := d.GetContainers()
-	if err != nil {
-		return nil, err
-	}
-	var result []*container.ContainerInfo
-	for _, c := range containers {
-		if ns, ok := c.Annotations["io.kubernetes.pod.namespace"]; ok && ns == namespace {
-			if pn, ok := c.Annotations["io.kubernetes.pod.name"]; ok && pn == podName {
-				result = append(result, c)
-			}
-		}
-	}
-	return result, nil
 }
 
 // SetIOPSLimit 动态设置IOPS限制

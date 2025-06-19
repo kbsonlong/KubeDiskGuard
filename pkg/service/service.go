@@ -1,34 +1,27 @@
 package service
 
 import (
-	"context"
-	"encoding/json"
 	"fmt"
 	"log"
-	"net/http"
 	"os"
 	"reflect"
-	"time"
 
 	"iops-limit-service/pkg/config"
 	"iops-limit-service/pkg/container"
 	"iops-limit-service/pkg/detector"
+	"iops-limit-service/pkg/kubeclient"
 	"iops-limit-service/pkg/runtime"
 
-	"crypto/tls"
-
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/fields"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/watch"
-	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
 )
 
 // IOPSLimitService IOPS限制服务
 type IOPSLimitService struct {
-	config  *config.Config
-	runtime container.Runtime
+	config     *config.Config
+	runtime    container.Runtime
+	kubeClient *kubeclient.KubeClient
 }
 
 // NewIOPSLimitService 创建IOPS限制服务
@@ -52,199 +45,135 @@ func NewIOPSLimitService(config *config.Config) (*IOPSLimitService, error) {
 
 	// 初始化运行时
 	var err error
-	if config.ContainerRuntime == "docker" {
+	switch config.ContainerRuntime {
+	case "docker":
 		service.runtime, err = runtime.NewDockerRuntime(config)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create docker runtime: %v", err)
 		}
-	} else if config.ContainerRuntime == "containerd" {
+	case "containerd":
 		service.runtime, err = runtime.NewContainerdRuntime(config)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create containerd runtime: %v", err)
 		}
-	} else {
+	default:
 		return nil, fmt.Errorf("unsupported container runtime: %s", config.ContainerRuntime)
+	}
+
+	// 初始化kubeClient
+	nodeName := os.Getenv("NODE_NAME")
+	if nodeName == "" {
+		nodeName, _ = os.Hostname()
+	}
+	service.kubeClient, err = kubeclient.NewKubeClient(nodeName, config.KubeConfigPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create kubeclient: %v", err)
 	}
 
 	return service, nil
 }
 
-// ProcessExistingContainers 处理现有容器
+// ShouldSkipContainer 只做关键字过滤
+func (s *IOPSLimitService) ShouldSkipContainer(image, name string) bool {
+	for _, keyword := range s.config.ExcludeKeywords {
+		if contains(image, keyword) || contains(name, keyword) {
+			return true
+		}
+	}
+	return false
+}
+
+// contains 检查字符串是否包含子字符串
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr ||
+		(len(s) > len(substr) && (s[:len(substr)] == substr ||
+			s[len(s)-len(substr):] == substr ||
+			containsSubstring(s, substr))))
+}
+
+// containsSubstring 检查字符串中间是否包含子字符串
+func containsSubstring(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
+}
+
+// processPodContainers 处理单个Pod下所有容器的IOPS限速
+func (s *IOPSLimitService) processPodContainers(pod corev1.Pod, iopsLimit int) {
+	for _, cs := range pod.Status.ContainerStatuses {
+		containerID := parseRuntimeID(cs.ContainerID)
+		if containerID == "" {
+			continue
+		}
+		containerInfo, err := s.runtime.GetContainerByID(containerID)
+		if err != nil {
+			log.Printf("Failed to get container info for %s: %v", containerID, err)
+			continue
+		}
+		if s.ShouldSkipContainer(containerInfo.Image, containerInfo.Name) {
+			log.Printf("Skip IOPS limit for container %s (excluded by keyword)", containerInfo.ID)
+			continue
+		}
+		if err := s.runtime.SetIOPSLimit(containerInfo, iopsLimit); err != nil {
+			log.Printf("Failed to set IOPS limit for container %s: %v", containerInfo.ID, err)
+		} else {
+			log.Printf("Applied IOPS limit for container %s (pod: %s/%s): %d", containerInfo.ID, pod.Namespace, pod.Name, iopsLimit)
+		}
+	}
+}
+
+// ProcessExistingContainers 处理现有容器（以Pod为主索引）
 func (s *IOPSLimitService) ProcessExistingContainers() error {
-	// 获取本节点所有Pod信息
 	pods, err := s.getNodePods()
 	if err != nil {
 		log.Printf("Failed to get node pods: %v", err)
-		// 如果无法获取Pod信息，使用默认配置处理现有容器
-		return s.processContainersWithDefaultLimit()
+		return err
 	}
 
-	// 创建Pod注解映射
-	podAnnotations := make(map[string]int)
 	for _, pod := range pods {
-		if pod.Status.Phase == corev1.PodRunning {
-			key := pod.Namespace + "/" + pod.Name
-			iopsLimit := ParseIopsLimitFromAnnotations(pod.Annotations, s.config.ContainerIOPSLimit)
-			podAnnotations[key] = iopsLimit
+		if pod.Status.Phase != corev1.PodRunning {
+			continue
 		}
-	}
-
-	// 获取所有容器
-	containers, err := s.runtime.GetContainers()
-	if err != nil {
-		return fmt.Errorf("failed to get containers: %v", err)
-	}
-
-	// 处理每个容器
-	for _, container := range containers {
-		// 尝试从容器注解中获取Pod信息
-		podNamespace, podName := s.extractPodInfoFromContainer(container)
-		if podNamespace != "" && podName != "" {
-			key := podNamespace + "/" + podName
-			if iopsLimit, exists := podAnnotations[key]; exists {
-				// 使用Pod注解中的IOPS限制
-				if err := s.runtime.SetIOPSLimit(container, iopsLimit); err != nil {
-					log.Printf("Failed to set IOPS limit for container %s (pod: %s): %v", container.ID, key, err)
-				} else {
-					log.Printf("Applied Pod-specific IOPS limit for container %s (pod: %s): %d", container.ID, key, iopsLimit)
-				}
+		// Pod维度过滤：命名空间
+		excluded := false
+		for _, ns := range s.config.ExcludeNamespaces {
+			if pod.Namespace == ns {
+				excluded = true
+				break
+			}
+		}
+		if excluded {
+			continue
+		}
+		// Pod维度过滤：labelSelector
+		if s.config.ExcludeLabelSelector != "" {
+			selector, err := labels.Parse(s.config.ExcludeLabelSelector)
+			if err == nil && selector.Matches(labels.Set(pod.Labels)) {
 				continue
 			}
 		}
-
-		// 如果无法获取Pod信息或Pod不存在，使用默认配置
-		if err := s.runtime.ProcessContainer(container); err != nil {
-			log.Printf("Failed to process container %s with default limit: %v", container.ID, err)
-		} else {
-			log.Printf("Applied default IOPS limit for container %s: %d", container.ID, s.config.ContainerIOPSLimit)
-		}
+		// 解析注解
+		iopsLimit := ParseIopsLimitFromAnnotations(pod.Annotations, s.config.ContainerIOPSLimit)
+		s.processPodContainers(pod, iopsLimit)
 	}
-
 	return nil
 }
 
-// getNodePods 获取本节点的所有Pod（优先使用kubelet API，fallback到API Server）
-func (s *IOPSLimitService) getNodePods() ([]corev1.Pod, error) {
-	// 首先尝试使用kubelet API
-	pods, err := s.getNodePodsFromKubelet()
-	if err == nil {
-		log.Printf("Successfully got %d pods from kubelet API", len(pods))
-		return pods, nil
+// parseRuntimeID 解析K8s ContainerID字段，去掉前缀（如docker://、containerd://）
+func parseRuntimeID(k8sID string) string {
+	if k8sID == "" {
+		return ""
 	}
-
-	log.Printf("Failed to get pods from kubelet API: %v, falling back to API Server", err)
-
-	// 如果kubelet API失败，回退到API Server
-	return s.getNodePodsFromAPIServer()
-}
-
-// getNodePodsFromKubelet 使用kubelet API获取本节点Pod信息
-func (s *IOPSLimitService) getNodePodsFromKubelet() ([]corev1.Pod, error) {
-	// 使用kubelet API获取本节点Pod信息
-	kubeletHost := os.Getenv("KUBELET_HOST")
-	if kubeletHost == "" {
-		kubeletHost = "localhost"
+	if idx := len("docker://"); len(k8sID) > idx && k8sID[:idx] == "docker://" {
+		return k8sID[idx:]
 	}
-
-	kubeletPort := os.Getenv("KUBELET_PORT")
-	if kubeletPort == "" {
-		kubeletPort = "10250"
+	if idx := len("containerd://"); len(k8sID) > idx && k8sID[:idx] == "containerd://" {
+		return k8sID[idx:]
 	}
-
-	// 构建kubelet API URL
-	kubeletURL := fmt.Sprintf("https://%s:%s/pods", kubeletHost, kubeletPort)
-
-	// 创建HTTP客户端，跳过TLS验证（kubelet使用自签名证书）
-	client := &http.Client{
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{
-				InsecureSkipVerify: true,
-			},
-		},
-		Timeout: 10 * time.Second,
-	}
-
-	// 发送请求到kubelet API
-	req, err := http.NewRequest("GET", kubeletURL, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %v", err)
-	}
-
-	// 设置必要的头部
-	req.Header.Set("Accept", "application/json")
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to request kubelet API: %v", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("kubelet API returned status: %d", resp.StatusCode)
-	}
-
-	// 解析响应
-	var podList corev1.PodList
-	if err := json.NewDecoder(resp.Body).Decode(&podList); err != nil {
-		return nil, fmt.Errorf("failed to decode kubelet response: %v", err)
-	}
-
-	return podList.Items, nil
-}
-
-// getNodePodsFromAPIServer 使用API Server获取本节点Pod信息（fallback方法）
-func (s *IOPSLimitService) getNodePodsFromAPIServer() ([]corev1.Pod, error) {
-	nodeName := os.Getenv("NODE_NAME")
-	if nodeName == "" {
-		nodeName, _ = os.Hostname()
-	}
-
-	config, err := rest.InClusterConfig()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get in-cluster config: %v", err)
-	}
-
-	clientset, err := kubernetes.NewForConfig(config)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create kubernetes client: %v", err)
-	}
-
-	fieldSelector := fields.OneTermEqualSelector("spec.nodeName", nodeName).String()
-	pods, err := clientset.CoreV1().Pods("").List(context.TODO(), metav1.ListOptions{
-		FieldSelector: fieldSelector,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to list pods from API Server: %v", err)
-	}
-
-	return pods.Items, nil
-}
-
-// extractPodInfoFromContainer 从容器信息中提取Pod信息
-func (s *IOPSLimitService) extractPodInfoFromContainer(container *container.ContainerInfo) (namespace, name string) {
-	// 尝试从容器注解中获取Pod信息
-	if namespace, ok := container.Annotations["io.kubernetes.pod.namespace"]; ok {
-		if name, ok := container.Annotations["io.kubernetes.pod.name"]; ok {
-			return namespace, name
-		}
-	}
-	return "", ""
-}
-
-// processContainersWithDefaultLimit 使用默认配置处理现有容器（fallback方法）
-func (s *IOPSLimitService) processContainersWithDefaultLimit() error {
-	containers, err := s.runtime.GetContainers()
-	if err != nil {
-		return fmt.Errorf("failed to get containers: %v", err)
-	}
-
-	for _, container := range containers {
-		if err := s.runtime.ProcessContainer(container); err != nil {
-			log.Printf("Failed to process container %s: %v", container.ID, err)
-		}
-	}
-
-	return nil
+	return k8sID
 }
 
 // WatchEvents 监听事件
@@ -254,27 +183,11 @@ func (s *IOPSLimitService) WatchEvents() error {
 
 // WatchPodEvents 监听本节点Pod变化，动态调整IOPS
 func (s *IOPSLimitService) WatchPodEvents() error {
-	nodeName := os.Getenv("NODE_NAME")
-	if nodeName == "" {
-		nodeName, _ = os.Hostname()
-	}
-	config, err := rest.InClusterConfig()
+	watcher, err := s.kubeClient.WatchNodePods()
 	if err != nil {
 		return err
 	}
-	clientset, err := kubernetes.NewForConfig(config)
-	if err != nil {
-		return err
-	}
-	fieldSelector := fields.OneTermEqualSelector("spec.nodeName", nodeName).String()
-	watcher, err := clientset.CoreV1().Pods("").Watch(context.TODO(), metav1.ListOptions{
-		FieldSelector: fieldSelector,
-		Watch:         true,
-	})
-	if err != nil {
-		return err
-	}
-	log.Printf("Start watching pods on node: %s", nodeName)
+	log.Printf("Start watching pods on node: %s", s.kubeClient.NodeName)
 	podAnnotations := make(map[string]struct {
 		Annotations map[string]string
 		IopsLimit   int
@@ -296,20 +209,7 @@ func (s *IOPSLimitService) WatchPodEvents() error {
 			if reflect.DeepEqual(old.Annotations, newAnn) && old.IopsLimit == iopsLimit {
 				continue
 			}
-			containers, err := s.runtime.GetContainersByPod(pod.Namespace, pod.Name)
-			if err != nil {
-				log.Printf("GetContainersByPod error: %v", err)
-				continue
-			}
-			for _, c := range containers {
-				if container.ShouldSkip(c, s.config.ExcludeKeywords, s.config.ExcludeNamespaces, s.config.ExcludeRegexps, s.config.ExcludeLabelSelector) {
-					log.Printf("Skip IOPS limit for container %s (excluded by filter)", c.ID)
-					continue
-				}
-				if err := s.runtime.SetIOPSLimit(c, iopsLimit); err != nil {
-					log.Printf("SetIOPSLimit failed for %s: %v", c.ID, err)
-				}
-			}
+			s.processPodContainers(*pod, iopsLimit)
 			podAnnotations[key] = struct {
 				Annotations map[string]string
 				IopsLimit   int
@@ -371,4 +271,9 @@ func (s *IOPSLimitService) Run() error {
 
 	// 监听新容器事件
 	return s.WatchEvents()
+}
+
+// getNodePods 获取本节点的所有Pod（优先使用kubelet API，fallback到API Server）
+func (s *IOPSLimitService) getNodePods() ([]corev1.Pod, error) {
+	return s.kubeClient.ListNodePodsWithKubeletFirst()
 }

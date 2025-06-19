@@ -61,9 +61,8 @@ func (c *ContainerdRuntime) GetContainers() ([]*container.ContainerInfo, error) 
 			continue
 		}
 
-		if !container.ShouldSkip(containerInfo, c.config.ExcludeKeywords, c.config.ExcludeNamespaces, c.config.ExcludeRegexps, c.config.ExcludeLabelSelector) {
-			containerInfos = append(containerInfos, containerInfo)
-		}
+		// 过滤已在service层完成，这里直接append
+		containerInfos = append(containerInfos, containerInfo)
 	}
 
 	return containerInfos, nil
@@ -131,23 +130,6 @@ func (c *ContainerdRuntime) ProcessContainer(container *container.ContainerInfo)
 
 	log.Printf("Successfully set IOPS limit for container %s: %s %d", container.Name, majMin, c.config.ContainerIOPSLimit)
 	return nil
-}
-
-// GetContainersByPod 通过Pod信息查找本地容器
-func (c *ContainerdRuntime) GetContainersByPod(namespace, podName string) ([]*container.ContainerInfo, error) {
-	containers, err := c.GetContainers()
-	if err != nil {
-		return nil, err
-	}
-	var result []*container.ContainerInfo
-	for _, cont := range containers {
-		if ns, ok := cont.Annotations["io.kubernetes.pod.namespace"]; ok && ns == namespace {
-			if pn, ok := cont.Annotations["io.kubernetes.pod.name"]; ok && pn == podName {
-				result = append(result, cont)
-			}
-		}
-	}
-	return result, nil
 }
 
 // SetIOPSLimit 动态设置IOPS限制

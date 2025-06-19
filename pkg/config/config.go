@@ -23,6 +23,7 @@ type Config struct {
 	ContainerSocketPath  string   `json:"container_socket_path,omitempty"` // 可选字段，默认为空
 	KubeletHost          string   `json:"kubelet_host,omitempty"`          // kubelet主机地址
 	KubeletPort          string   `json:"kubelet_port,omitempty"`          // kubelet端口
+	KubeConfigPath       string   // 支持集群外部运行
 }
 
 // GetDefaultConfig 获取默认配置
@@ -42,6 +43,7 @@ func GetDefaultConfig() *Config {
 		ContainerSocketPath:  "/run/containerd/containerd.sock",
 		KubeletHost:          "",
 		KubeletPort:          "",
+		KubeConfigPath:       "",
 	}
 }
 
@@ -107,6 +109,10 @@ func LoadFromEnv(config *Config) {
 
 	if val := os.Getenv("KUBELET_PORT"); val != "" {
 		config.KubeletPort = val
+	}
+
+	if v := os.Getenv("KUBECONFIG_PATH"); v != "" {
+		config.KubeConfigPath = v
 	}
 }
 

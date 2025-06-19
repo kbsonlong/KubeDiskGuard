@@ -5,6 +5,7 @@
 ## 核心特性
 
 - 自动检测容器运行时（Docker/containerd）和 cgroup 版本（v1/v2）
+- **以Pod为主索引，所有限速和过滤逻辑均以Pod+containerStatuses为入口，避免全量遍历容器运行时**
 - 通过 client-go 监听本节点 Pod 事件，自动为新容器或注解变更的容器设置/调整 IOPS 限制
 - **服务重启时保持IOPS限制一致性**：重启后会自动获取Pod注解信息，确保现有容器的IOPS限制与注解配置保持一致
 - **优先使用kubelet API**：减少API Server压力，提高性能和可靠性
@@ -12,6 +13,13 @@
 - 支持通过注解动态调整单个 Pod 的 IOPS 限制
 - 配置灵活，环境变量可控
 - 健康检查、详细日志、单元测试
+
+## 设计原则与架构亮点
+
+- **以Pod为主索引**：所有业务逻辑（限速、过滤、注解变更等）均以Pod及其containerStatuses为入口，极大提升性能和准确性。
+- **运行时只做单容器操作**：只在需要底层操作（如cgroup限速）时，用runtime ID查单个容器详细信息，避免全量遍历。
+- **事件监听、注解变更、服务重启等场景全部用Pod+containerStatuses实现**，保证与K8s调度状态强一致。
+- **代码结构清晰**：service层负责业务主流程和过滤，runtime层只负责单容器操作。
 
 ## 架构图
 
@@ -37,13 +45,20 @@ flowchart TD
     Runtime -- "管理容器生命周期" --> Cgroup
     Pod1 -. "由Kubelet调度" .-> Runtime
     Pod2 -. "由Kubelet调度" .-> Runtime
-    subgraph "用户/运维"
+    subgraph "管理"
         User["用户/运维"]
     end
     User -- "配置注解/环境变量" --> APIServer
     User -- "部署/管理" --> Service
     Cgroup -- "物理IO限制" --> NVMe["NVMe磁盘"]
 ```
+
+## 主要优化说明
+
+- **所有限速和过滤逻辑均以Pod为主索引**，只遍历K8s已知的业务容器，极大提升性能和准确性。
+- **运行时不再支持GetContainersByPod、全量GetContainers等接口**，只保留GetContainerByID、SetIOPSLimit等单容器操作。
+- **事件监听、注解变更、服务重启等场景全部用Pod+containerStatuses实现**，避免无谓的全量遍历。
+- **代码职责分明**：service层聚焦业务主流程和过滤，runtime层聚焦单容器底层操作。
 
 ## 使用说明
 
