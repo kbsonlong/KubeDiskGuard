@@ -29,7 +29,7 @@ FROM --platform=$TARGETPLATFORM alpine:3.18
 WORKDIR /app
 
 # 安装必要的系统工具
-RUN apk add --no-cache ca-certificates tzdata
+RUN apk add --no-cache ca-certificates tzdata util-linux
 
 # 从构建阶段复制二进制文件
 COPY --from=builder /app/iops-limit-service .

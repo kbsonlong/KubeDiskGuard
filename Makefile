@@ -1,7 +1,7 @@
 # 变量定义
 IMAGE_NAME ?= iops-limit-service
 IMAGE_TAG ?= latest
-REGISTRY ?= registry-sg.inshopline.com/yy_default
+REGISTRY ?= registry.kbsonlong.com
 FULL_IMAGE_NAME = $(REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG)
 
 # Go 相关变量

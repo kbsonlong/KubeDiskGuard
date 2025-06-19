@@ -127,6 +127,7 @@ func (s *IOPSLimitService) processPodContainers(pod corev1.Pod, iopsLimit int) {
 
 // ShouldProcessPod 判断Pod是否需要处理（命名空间、labelSelector过滤）
 func (s *IOPSLimitService) ShouldProcessPod(pod corev1.Pod) bool {
+	// todo Phase is Running, but container not Running
 	if pod.Status.Phase != corev1.PodRunning {
 		return false
 	}

@@ -17,7 +17,7 @@ spec:
       hostPID: true
       containers:
       - name: iops-limit-service
-        image: your-registry/iops-limit-service:latest
+        image: registry.kbsonlong.com/iops-limit-service:latest
         imagePullPolicy: Always
         securityContext:
           privileged: true
@@ -29,19 +29,23 @@ spec:
         - name: DATA_MOUNT
           value: "/data"
         - name: EXCLUDE_KEYWORDS
-          value: "pause,istio-proxy,psmdb,koordinator,apisix"
+          value: "pause,istio-proxy,apisix"
         - name: EXCLUDE_NAMESPACES
-          value: "kube-system"
+          value: "kube-system,kruise-system,psmdb,istio-system,koordinator-system,kyverno"
         - name: CONTAINER_RUNTIME
-          value: "auto"
+          value: "docker"
         - name: CGROUP_VERSION
-          value: "auto"
+          value: "v1"
         - name: CHECK_INTERVAL
           value: "30"
         - name: KUBELET_HOST
           value: "localhost"
         - name: KUBELET_PORT
           value: "10250"
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
         volumeMounts:
         - name: cgroup
           mountPath: /sys/fs/cgroup
@@ -51,6 +55,8 @@ spec:
           mountPath: /proc
         - name: dev
           mountPath: /dev
+        - name: data
+          mountPath: /data
         resources:
           requests:
             memory: "64Mi"
@@ -66,14 +72,6 @@ spec:
             - "ps aux | grep iops-limit-service | grep -v grep"
           initialDelaySeconds: 30
           periodSeconds: 10
-        readinessProbe:
-          exec:
-            command:
-            - /bin/sh
-            - -c
-            - "test -f /proc/1/root/app/iops-limit-service"
-          initialDelaySeconds: 5
-          periodSeconds: 5
       volumes:
       - name: cgroup
         hostPath:
@@ -81,13 +79,16 @@ spec:
       # 根据运行时设置 `socket` 地址
       - name: socket
         hostPath:
-          path: /var/run/docker/containerd/containerd.sock
+          path: /var/run/docker.sock
       - name: proc
         hostPath:
           path: /proc
       - name: dev
         hostPath:
           path: /dev
+      - name: data
+        hostPath:
+          path: /data
       tolerations:
       - key: node-role.kubernetes.io/master
         operator: Exists
@@ -95,6 +96,12 @@ spec:
       - key: node-role.kubernetes.io/control-plane
         operator: Exists
         effect: NoSchedule
+      nodeSelector:
+        ip: 10.90.210.153
+      imagePullSecrets:
+      - name: zj-repo-sg
+      serviceAccount: iops-limit-service
+      serviceAccountName: iops-limit-service
 ---
 apiVersion: v1
 kind: ServiceAccount
