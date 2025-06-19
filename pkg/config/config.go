@@ -10,11 +10,9 @@ import (
 // Config 配置结构体
 type Config struct {
 	ContainerIOPSLimit   int      `json:"container_iops_limit"`
-	DataTotalIOPS        int      `json:"data_total_iops"`
 	DataMount            string   `json:"data_mount"`
 	ExcludeKeywords      []string `json:"exclude_keywords"`
 	ExcludeNamespaces    []string `json:"exclude_namespaces"`
-	ExcludeRegexps       []string `json:"exclude_regexps"`
 	ExcludeLabelSelector string   `json:"exclude_label_selector"`
 	ContainerdNamespace  string   `json:"containerd_namespace"`
 	ContainerRuntime     string   `json:"container_runtime"`
@@ -30,11 +28,9 @@ type Config struct {
 func GetDefaultConfig() *Config {
 	return &Config{
 		ContainerIOPSLimit:   500,
-		DataTotalIOPS:        3000,
 		DataMount:            "/data",
 		ExcludeKeywords:      []string{"pause", "istio-proxy", "psmdb", "kube-system", "koordinator", "apisix"},
 		ExcludeNamespaces:    []string{"kube-system"},
-		ExcludeRegexps:       []string{},
 		ExcludeLabelSelector: "",
 		ContainerdNamespace:  "k8s.io",
 		ContainerRuntime:     "auto",
@@ -55,12 +51,6 @@ func LoadFromEnv(config *Config) {
 		}
 	}
 
-	if val := os.Getenv("DATA_TOTAL_IOPS"); val != "" {
-		if iops, err := strconv.Atoi(val); err == nil {
-			config.DataTotalIOPS = iops
-		}
-	}
-
 	if val := os.Getenv("DATA_MOUNT"); val != "" {
 		config.DataMount = val
 	}
@@ -71,10 +61,6 @@ func LoadFromEnv(config *Config) {
 
 	if val := os.Getenv("EXCLUDE_NAMESPACES"); val != "" {
 		config.ExcludeNamespaces = strings.Split(val, ",")
-	}
-
-	if val := os.Getenv("EXCLUDE_REGEXPS"); val != "" {
-		config.ExcludeRegexps = strings.Split(val, ",")
 	}
 
 	if val := os.Getenv("EXCLUDE_LABEL_SELECTOR"); val != "" {
@@ -99,7 +85,7 @@ func LoadFromEnv(config *Config) {
 		}
 	}
 
-	if val := os.Getenv("Container_Socket_Path"); val != "" {
+	if val := os.Getenv("CONTAINER_SOCKET_PATH"); val != "" {
 		config.ContainerSocketPath = val
 	}
 

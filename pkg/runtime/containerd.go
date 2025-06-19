@@ -44,30 +44,6 @@ func (c *ContainerdRuntime) Close() error {
 	return nil
 }
 
-// GetContainers 获取所有容器
-func (c *ContainerdRuntime) GetContainers() ([]*container.ContainerInfo, error) {
-	ctx := namespaces.WithNamespace(context.Background(), c.config.ContainerdNamespace)
-
-	containers, err := c.client.Containers(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to list containerd containers: %v", err)
-	}
-
-	var containerInfos []*container.ContainerInfo
-	for _, cont := range containers {
-		containerInfo, err := c.getContainerInfo(ctx, cont)
-		if err != nil {
-			log.Printf("Failed to get container info for %s: %v", cont.ID(), err)
-			continue
-		}
-
-		// 过滤已在service层完成，这里直接append
-		containerInfos = append(containerInfos, containerInfo)
-	}
-
-	return containerInfos, nil
-}
-
 // GetContainerByID 根据ID获取容器信息
 func (c *ContainerdRuntime) GetContainerByID(containerID string) (*container.ContainerInfo, error) {
 	ctx := namespaces.WithNamespace(context.Background(), c.config.ContainerdNamespace)

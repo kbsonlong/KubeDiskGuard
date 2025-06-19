@@ -26,14 +26,10 @@ spec:
         env:
         - name: CONTAINER_IOPS_LIMIT
           value: "500"
-        - name: DATA_TOTAL_IOPS
-          value: "3000"
         - name: DATA_MOUNT
           value: "/data"
         - name: EXCLUDE_KEYWORDS
           value: "pause,istio-proxy,psmdb,kube-system,koordinator,apisix"
-        - name: CONTAINERD_NAMESPACE
-          value: "k8s.io"
         - name: CONTAINER_RUNTIME
           value: "auto"
         - name: CGROUP_VERSION
@@ -47,9 +43,7 @@ spec:
         volumeMounts:
         - name: cgroup
           mountPath: /sys/fs/cgroup
-        - name: docker-socket
-          mountPath: /var/run/docker.sock
-        - name: containerd-socket
+        - name: socket
           mountPath: /run/containerd/containerd.sock
         - name: proc
           mountPath: /proc
@@ -82,10 +76,8 @@ spec:
       - name: cgroup
         hostPath:
           path: /sys/fs/cgroup
-      - name: docker-socket
-        hostPath:
-          path: /var/run/docker.sock
-      - name: containerd-socket
+      # 根据运行时设置 `socket` 地址
+      - name: socket
         hostPath:
           path: /run/containerd/containerd.sock
       - name: proc

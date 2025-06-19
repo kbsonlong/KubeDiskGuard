@@ -87,10 +87,8 @@ func shouldSkip(container *ContainerInfo, excludeKeywords []string) bool {
 ```go
 type Config struct {
     ContainerIOPSLimit    int      `json:"container_iops_limit"`
-    DataTotalIOPS         int      `json:"data_total_iops"`
     DataMount             string   `json:"data_mount"`
     ExcludeKeywords       []string `json:"exclude_keywords"`
-    ContainerdNamespace   string   `json:"containerd_namespace"`
     ContainerRuntime      string   `json:"container_runtime"`
     CgroupVersion         string   `json:"cgroup_version"`
     CheckInterval         int      `json:"check_interval"`

@@ -11,8 +11,6 @@ type ContainerInfo struct {
 
 // Runtime 容器运行时接口
 type Runtime interface {
-	// GetContainers 获取所有容器
-	GetContainers() ([]*ContainerInfo, error)
 
 	// GetContainerByID 根据ID获取容器信息
 	GetContainerByID(containerID string) (*ContainerInfo, error)

@@ -83,8 +83,12 @@ func NewKubeClient(nodeName, kubeconfigPath string) (*KubeClient, error) {
 	if v := os.Getenv("KUBELET_SA_TOKEN_PATH"); v != "" {
 		saTokenPath = v
 	}
+	caPath := "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+	if v := os.Getenv("KUBELET_CA_PATH"); v != "" {
+		caPath = v
+	}
+
 	// 新增：支持自定义CA、客户端证书、Token
-	caPath := os.Getenv("KUBELET_CA_PATH")
 	clientCert := os.Getenv("KUBELET_CLIENT_CERT_PATH")
 	clientKey := os.Getenv("KUBELET_CLIENT_KEY_PATH")
 	tokenPath := os.Getenv("KUBELET_TOKEN_PATH")

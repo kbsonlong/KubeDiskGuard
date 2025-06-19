@@ -79,7 +79,6 @@ metadata:
 
 - **关键字过滤**：`EXCLUDE_KEYWORDS`，如 `pause,istio-proxy`
 - **命名空间过滤**：`EXCLUDE_NAMESPACES`，如 `kube-system,monitoring`
-- **正则表达式过滤**：`EXCLUDE_REGEXPS`，如 `^istio-.*$`
 - **LabelSelector过滤**：`EXCLUDE_LABEL_SELECTOR`，支持 K8s 原生 label selector 语法，如 `app=system,env in (prod,staging),!debug`
 
 **示例环境变量配置：**
@@ -90,8 +89,6 @@ env:
     value: "pause,istio-proxy"
   - name: EXCLUDE_NAMESPACES
     value: "kube-system,monitoring"
-  - name: EXCLUDE_REGEXPS
-    value: "^istio-.*$"
   - name: EXCLUDE_LABEL_SELECTOR
     value: "app=system,env in (prod,staging),!debug"
 ```
@@ -102,14 +99,12 @@ env:
 |---------|--------|------|
 | `NODE_NAME` |  | 必须，节点名，建议通过Downward API注入 |
 | `CONTAINER_IOPS_LIMIT` | 500 | 单个容器的 IOPS 限制 |
-| `DATA_TOTAL_IOPS` | 3000 | 数据盘总 IOPS 限制 |
 | `DATA_MOUNT` | /data | 数据盘挂载点 |
 | `EXCLUDE_KEYWORDS` | pause,istio-proxy,psmdb,kube-system,koordinator,apisix | 排除的容器关键字 |
 | `EXCLUDE_NAMESPACES` | kube-system | 排除的命名空间 |
-| `EXCLUDE_REGEXPS` |  | 排除的正则表达式 |
 | `EXCLUDE_LABEL_SELECTOR` |  | K8s label selector 语法 |
-| `CONTAINERD_NAMESPACE` | k8s.io | containerd 命名空间 |
 | `CONTAINER_RUNTIME` | auto | 容器运行时 |
+| `CONTAINER_SOCKET_PATH` | | 容器运行时 `socket` 地址 |
 | `CGROUP_VERSION` | auto | cgroup 版本 |
 | `CHECK_INTERVAL` | 30 | 检查间隔（秒） |
 | `KUBELET_HOST` | localhost | kubelet API 主机地址 |
