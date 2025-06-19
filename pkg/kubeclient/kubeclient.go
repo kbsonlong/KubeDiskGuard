@@ -36,6 +36,15 @@ type KubeClient struct {
 	SATokenPath       string
 }
 
+// IKubeClient 接口，便于mock
+type IKubeClient interface {
+	ListNodePodsWithKubeletFirst() ([]corev1.Pod, error)
+	WatchNodePods() (watch.Interface, error)
+}
+
+// 确保KubeClient实现IKubeClient
+var _ IKubeClient = (*KubeClient)(nil)
+
 // NewKubeClient 创建KubeClient，nodeName必须由参数传入
 func NewKubeClient(nodeName, kubeconfigPath string) (*KubeClient, error) {
 	if nodeName == "" {

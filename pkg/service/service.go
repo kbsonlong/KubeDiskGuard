@@ -21,7 +21,7 @@ import (
 type IOPSLimitService struct {
 	config     *config.Config
 	runtime    container.Runtime
-	kubeClient *kubeclient.KubeClient
+	kubeClient kubeclient.IKubeClient
 }
 
 // NewIOPSLimitService 创建IOPS限制服务
@@ -189,7 +189,9 @@ func (s *IOPSLimitService) WatchPodEvents() error {
 	if err != nil {
 		return err
 	}
-	log.Printf("Start watching pods on node: %s", s.kubeClient.NodeName)
+	// 修正：通过环境变量获取节点名
+	nodeName := os.Getenv("NODE_NAME")
+	log.Printf("Start watching pods on node: %s", nodeName)
 	podAnnotations := make(map[string]struct {
 		Annotations map[string]string
 		IopsLimit   int
@@ -312,4 +314,35 @@ func (s *IOPSLimitService) ResetOneContainerIOPSLimit(containerID string) error 
 		return err
 	}
 	return s.runtime.ResetIOPSLimit(containerInfo)
+}
+
+// 新增：支持注入mock kubeclient
+func NewIOPSLimitServiceWithKubeClient(config *config.Config, kc kubeclient.IKubeClient) (*IOPSLimitService, error) {
+	service := &IOPSLimitService{
+		config:     config,
+		kubeClient: kc,
+	}
+	// 自动检测运行时
+	if config.ContainerRuntime == "auto" {
+		config.ContainerRuntime = detector.DetectRuntime()
+	}
+	if config.CgroupVersion == "auto" {
+		config.CgroupVersion = detector.DetectCgroupVersion()
+	}
+	var err error
+	switch config.ContainerRuntime {
+	case "docker":
+		service.runtime, err = runtime.NewDockerRuntime(config)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create docker runtime: %v", err)
+		}
+	case "containerd":
+		service.runtime, err = runtime.NewContainerdRuntime(config)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create containerd runtime: %v", err)
+		}
+	default:
+		return nil, fmt.Errorf("unsupported container runtime: %s", config.ContainerRuntime)
+	}
+	return service, nil
 }

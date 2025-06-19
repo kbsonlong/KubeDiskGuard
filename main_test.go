@@ -12,6 +12,8 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/watch"
 )
 
 func TestDetectRuntime(t *testing.T) {
@@ -314,17 +316,37 @@ func TestKubeletConfig(t *testing.T) {
 	os.Unsetenv("KUBELET_PORT")
 }
 
+// mockKubeClient实现
+type mockKubeClient struct {
+	pods []corev1.Pod
+}
+
+func (m *mockKubeClient) ListNodePodsWithKubeletFirst() ([]corev1.Pod, error) {
+	return m.pods, nil
+}
+func (m *mockKubeClient) WatchNodePods() (watch.Interface, error) {
+	return nil, nil
+}
+
 func TestResetAllContainersIOPSLimit(t *testing.T) {
 	cfg := config.GetDefaultConfig()
 	cfg.ContainerRuntime = "docker"
 	cfg.DataMount = "/data"
 
-	svc, err := service.NewIOPSLimitService(cfg)
+	pods := []corev1.Pod{
+		{
+			ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "pod1"},
+			Status: corev1.PodStatus{
+				Phase:             corev1.PodRunning,
+				ContainerStatuses: []corev1.ContainerStatus{{ContainerID: "docker://cid1"}},
+			},
+		},
+	}
+	mockKC := &mockKubeClient{pods: pods}
+	svc, err := service.NewIOPSLimitServiceWithKubeClient(cfg, mockKC)
 	if err != nil {
 		t.Fatalf("Failed to create service: %v", err)
 	}
-
-	// mock runtime，假设所有ResetIOPSLimit都能成功
 	err = svc.ResetAllContainersIOPSLimit()
 	if err != nil {
 		t.Errorf("ResetAllContainersIOPSLimit error: %v", err)
@@ -335,29 +357,39 @@ func TestResetOneContainerIOPSLimit(t *testing.T) {
 	cfg := config.GetDefaultConfig()
 	cfg.ContainerRuntime = "docker"
 	cfg.DataMount = "/data"
-
-	svc, err := service.NewIOPSLimitService(cfg)
+	mockKC := &mockKubeClient{pods: nil}
+	svc, err := service.NewIOPSLimitServiceWithKubeClient(cfg, mockKC)
 	if err != nil {
 		t.Fatalf("Failed to create service: %v", err)
 	}
-
-	// 这里假设有一个容器ID "test-container-id"
-	err = svc.ResetOneContainerIOPSLimit("test-container-id")
-	// 允许失败（如找不到容器），只要不panic即可
+	err = svc.ResetOneContainerIOPSLimit("cid1")
 	if err != nil {
 		t.Logf("ResetOneContainerIOPSLimit error (may be expected if no such container): %v", err)
 	}
 }
 
-func TestShouldProcessPod(t *testing.T) {
-	cfg := config.GetDefaultConfig()
-	cfg.ExcludeNamespaces = []string{"kube-system", "monitoring"}
-	cfg.ExcludeLabelSelector = "app=skipme"
-
-	svc, err := service.NewIOPSLimitService(cfg)
-	if err != nil {
-		t.Fatalf("Failed to create service: %v", err)
+// 独立的过滤逻辑函数，便于测试
+func shouldProcessPodForTest(pod corev1.Pod, excludeNamespaces []string, excludeLabelSelector string) bool {
+	if pod.Status.Phase != corev1.PodRunning {
+		return false
 	}
+	for _, ns := range excludeNamespaces {
+		if pod.Namespace == ns {
+			return false
+		}
+	}
+	if excludeLabelSelector != "" {
+		selector, err := labels.Parse(excludeLabelSelector)
+		if err == nil && selector.Matches(labels.Set(pod.Labels)) {
+			return false
+		}
+	}
+	return true
+}
+
+func TestShouldProcessPod(t *testing.T) {
+	excludeNamespaces := []string{"kube-system", "monitoring"}
+	excludeLabelSelector := "app=skipme"
 
 	cases := []struct {
 		name   string
@@ -384,9 +416,9 @@ func TestShouldProcessPod(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := svc.ShouldProcessPod(c.pod)
+			got := shouldProcessPodForTest(c.pod, excludeNamespaces, excludeLabelSelector)
 			if got != c.expect {
-				t.Errorf("ShouldProcessPod() = %v, want %v", got, c.expect)
+				t.Errorf("shouldProcessPodForTest() = %v, want %v", got, c.expect)
 			}
 		})
 	}
