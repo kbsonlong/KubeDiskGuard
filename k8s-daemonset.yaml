@@ -36,10 +36,10 @@ spec:
           value: "docker"
         - name: CGROUP_VERSION
           value: "v1"
-        - name: CHECK_INTERVAL
-          value: "30"
         - name: KUBELET_HOST
-          value: "localhost"
+          valueFrom:
+            fieldRef:
+              fieldPath: status.hostIP
         - name: KUBELET_PORT
           value: "10250"
         - name: NODE_NAME

@@ -21,7 +21,6 @@ type Config struct {
 	ContainerdNamespace     string   `json:"containerd_namespace"`
 	ContainerRuntime        string   `json:"container_runtime"`
 	CgroupVersion           string   `json:"cgroup_version"`
-	CheckInterval           int      `json:"check_interval"`
 	ContainerSocketPath     string   `json:"container_socket_path,omitempty"` // 可选字段，默认为空
 	KubeletHost             string   `json:"kubelet_host,omitempty"`          // kubelet主机地址
 	KubeletPort             string   `json:"kubelet_port,omitempty"`          // kubelet端口
@@ -43,7 +42,6 @@ func GetDefaultConfig() *Config {
 		ContainerdNamespace:     "k8s.io",
 		ContainerRuntime:        "auto",
 		CgroupVersion:           "auto",
-		CheckInterval:           30,
 		ContainerSocketPath:     "/run/containerd/containerd.sock",
 		KubeletHost:             "",
 		KubeletPort:             "",
@@ -105,12 +103,6 @@ func LoadFromEnv(config *Config) {
 
 	if val := os.Getenv("CGROUP_VERSION"); val != "" {
 		config.CgroupVersion = val
-	}
-
-	if val := os.Getenv("CHECK_INTERVAL"); val != "" {
-		if interval, err := strconv.Atoi(val); err == nil {
-			config.CheckInterval = interval
-		}
 	}
 
 	if val := os.Getenv("CONTAINER_SOCKET_PATH"); val != "" {

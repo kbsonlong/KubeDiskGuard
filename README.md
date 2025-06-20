@@ -130,7 +130,6 @@ env:
 | `CONTAINER_RUNTIME` | auto | 容器运行时 |
 | `CONTAINER_SOCKET_PATH` | | 容器运行时 `socket` 地址 |
 | `CGROUP_VERSION` | auto | cgroup 版本 |
-| `CHECK_INTERVAL` | 30 | 检查间隔（秒） |
 | `KUBELET_HOST` | localhost | kubelet API 主机地址 |
 | `KUBELET_PORT` | 10250 | kubelet API 端口 |
 | `KUBELET_CA_PATH` |  | kubelet API CA证书路径 |
