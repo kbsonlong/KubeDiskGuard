@@ -34,8 +34,8 @@ func GetDefaultConfig() *Config {
 		ContainerIOPSLimit:      500,
 		ContainerReadIOPSLimit:  500,
 		ContainerWriteIOPSLimit: 500,
-		ContainerReadBPSLimit:   1048576, // 1MB/s
-		ContainerWriteBPSLimit:  1048576, // 1MB/s
+		ContainerReadBPSLimit:   0, // 默认不限制读
+		ContainerWriteBPSLimit:  0, // 默认不限制写
 		DataMount:               "/data",
 		ExcludeKeywords:         []string{"pause", "istio-proxy", "psmdb", "kube-system", "koordinator", "apisix"},
 		ExcludeNamespaces:       []string{"kube-system"},

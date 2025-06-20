@@ -186,39 +186,59 @@ func (m *Manager) ResetBPSLimit(cgroupPath, majMin string) error {
 	return nil
 }
 
-// SetLimits 统一设置IOPS和BPS限制（riops/wiops/rbps/wbps）
+// SetLimits 统一设置IOPS和BPS限制（riops/wiops/rbps/wbps），为0时自动解除该项限速
 func (m *Manager) SetLimits(cgroupPath, majMin string, riops, wiops, rbps, wbps int) error {
 	if cgroupPath == "" || majMin == "" {
 		return fmt.Errorf("invalid cgroup path or major:minor")
 	}
 	if m.version == "v1" {
+		// IOPS
+		readIOPSFile := filepath.Join(cgroupPath, "blkio.throttle.read_iops_device")
 		if riops > 0 {
-			readFile := filepath.Join(cgroupPath, "blkio.throttle.read_iops_device")
-			if err := os.WriteFile(readFile, []byte(fmt.Sprintf("%s %d", majMin, riops)), 0644); err != nil {
+			if err := os.WriteFile(readIOPSFile, []byte(fmt.Sprintf("%s %d", majMin, riops)), 0644); err != nil {
 				return fmt.Errorf("failed to set read iops limit: %v", err)
 			}
+		} else {
+			if err := os.WriteFile(readIOPSFile, []byte{}, 0644); err != nil {
+				return fmt.Errorf("failed to reset read iops limit: %v", err)
+			}
 		}
+		writeIOPSFile := filepath.Join(cgroupPath, "blkio.throttle.write_iops_device")
 		if wiops > 0 {
-			writeFile := filepath.Join(cgroupPath, "blkio.throttle.write_iops_device")
-			if err := os.WriteFile(writeFile, []byte(fmt.Sprintf("%s %d", majMin, wiops)), 0644); err != nil {
+			if err := os.WriteFile(writeIOPSFile, []byte(fmt.Sprintf("%s %d", majMin, wiops)), 0644); err != nil {
 				return fmt.Errorf("failed to set write iops limit: %v", err)
 			}
-		}
-		if rbps > 0 {
-			readFile := filepath.Join(cgroupPath, "blkio.throttle.read_bps_device")
-			if err := os.WriteFile(readFile, []byte(fmt.Sprintf("%s %d", majMin, rbps)), 0644); err != nil {
-				return fmt.Errorf("failed to set read bps limit: %v", err)
+		} else {
+			if err := os.WriteFile(writeIOPSFile, []byte{}, 0644); err != nil {
+				return fmt.Errorf("failed to reset write iops limit: %v", err)
 			}
 		}
+		// BPS
+		readBPSFile := filepath.Join(cgroupPath, "blkio.throttle.read_bps_device")
+		if rbps > 0 {
+			if err := os.WriteFile(readBPSFile, []byte(fmt.Sprintf("%s %d", majMin, rbps)), 0644); err != nil {
+				return fmt.Errorf("failed to set read bps limit: %v", err)
+			}
+		} else {
+			fmt.Println("Resetting read bps limit to empty")
+			// 解除读带宽限速
+			if err := os.WriteFile(readBPSFile, []byte{}, 0644); err != nil {
+				return fmt.Errorf("failed to reset read bps limit: %v", err)
+			}
+		}
+		writeBPSFile := filepath.Join(cgroupPath, "blkio.throttle.write_bps_device")
 		if wbps > 0 {
-			writeFile := filepath.Join(cgroupPath, "blkio.throttle.write_bps_device")
-			if err := os.WriteFile(writeFile, []byte(fmt.Sprintf("%s %d", majMin, wbps)), 0644); err != nil {
+			if err := os.WriteFile(writeBPSFile, []byte(fmt.Sprintf("%s %d", majMin, wbps)), 0644); err != nil {
 				return fmt.Errorf("failed to set write bps limit: %v", err)
+			}
+		} else {
+			if err := os.WriteFile(writeBPSFile, []byte{}, 0644); err != nil {
+				return fmt.Errorf("failed to reset write bps limit: %v", err)
 			}
 		}
 		log.Printf("Set limits at %s riops=%d wiops=%d rbps=%d wbps=%d (v1)", majMin, riops, wiops, rbps, wbps)
 	} else {
-		// cgroup v2: 一次性写入所有项
+		// cgroup v2: 一次性写入所有项，0项不写
 		var parts []string
 		if riops > 0 {
 			parts = append(parts, fmt.Sprintf("riops=%d", riops))
@@ -232,11 +252,16 @@ func (m *Manager) SetLimits(cgroupPath, majMin string, riops, wiops, rbps, wbps 
 		if wbps > 0 {
 			parts = append(parts, fmt.Sprintf("wbps=%d", wbps))
 		}
+		ioMaxFile := filepath.Join(cgroupPath, "io.max")
 		if len(parts) == 0 {
+			// 全部为0，解除所有限速
+			if err := os.WriteFile(ioMaxFile, []byte("max"), 0644); err != nil {
+				return fmt.Errorf("failed to reset io.max: %v", err)
+			}
+			log.Printf("Reset all limits at %s (v2)", majMin)
 			return nil
 		}
 		content := fmt.Sprintf("%s %s", majMin, strings.Join(parts, " "))
-		ioMaxFile := filepath.Join(cgroupPath, "io.max")
 		if err := os.WriteFile(ioMaxFile, []byte(content), 0644); err != nil {
 			return fmt.Errorf("failed to set io.max: %v", err)
 		}

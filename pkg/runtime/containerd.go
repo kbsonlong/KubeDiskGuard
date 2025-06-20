@@ -3,7 +3,6 @@ package runtime
 import (
 	"context"
 	"fmt"
-	"log"
 	"strings"
 
 	"github.com/containerd/containerd"
@@ -87,25 +86,6 @@ func (c *ContainerdRuntime) getContainerInfo(ctx context.Context, cont container
 	}
 
 	return containerInfo, nil
-}
-
-// ProcessContainer 处理容器
-func (c *ContainerdRuntime) ProcessContainer(container *container.ContainerInfo) error {
-	majMin, err := device.GetMajMin(c.config.DataMount)
-	if err != nil {
-		log.Printf("Failed to get major:minor for container %s: %v", container.ID, err)
-		return err
-	}
-
-	cgroupPath := c.cgroup.FindCgroupPath(container.ID)
-	log.Printf("Found cgroup path for container %s: %s", container.Name, cgroupPath)
-	if err := c.cgroup.SetIOPSLimit(cgroupPath, majMin, c.config.ContainerIOPSLimit); err != nil {
-		log.Printf("Failed to set IOPS limit for container %s: %v", container.ID, err)
-		return err
-	}
-
-	log.Printf("Successfully set IOPS limit for container %s: %s %d", container.Name, majMin, c.config.ContainerIOPSLimit)
-	return nil
 }
 
 // SetLimits 统一设置IOPS和BPS限制

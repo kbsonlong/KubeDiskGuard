@@ -3,7 +3,6 @@ package runtime
 import (
 	"context"
 	"fmt"
-	"log"
 	"strings"
 
 	"github.com/docker/docker/client"
@@ -56,25 +55,6 @@ func (d *DockerRuntime) GetContainerByID(containerID string) (*container.Contain
 		ci.Annotations[k] = v
 	}
 	return ci, nil
-}
-
-// ProcessContainer 处理容器
-func (d *DockerRuntime) ProcessContainer(container *container.ContainerInfo) error {
-	majMin, err := device.GetMajMin(d.config.DataMount)
-	if err != nil {
-		log.Printf("Failed to get major:minor for container %s: %v", container.ID, err)
-		return err
-	}
-
-	cgroupPath := d.cgroup.BuildCgroupPath(container.ID, container.CgroupParent)
-
-	if err := d.cgroup.SetIOPSLimit(cgroupPath, majMin, d.config.ContainerIOPSLimit); err != nil {
-		log.Printf("Failed to set IOPS limit for container %s: %v", container.ID, err)
-		return err
-	}
-	log.Printf("Successfully set IOPS limit for container %s: %s %d", container.Name, majMin, d.config.ContainerIOPSLimit)
-
-	return nil
 }
 
 // Close 关闭Docker客户端连接

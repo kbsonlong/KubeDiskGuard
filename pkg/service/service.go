@@ -102,7 +102,7 @@ func containsSubstring(s, substr string) bool {
 }
 
 // processPodContainers 处理单个Pod下所有容器的IOPS/BPS限速（支持读写分开）
-func (s *KubeDiskGuardService) processPodContainers(pod corev1.Pod, readIops int) {
+func (s *KubeDiskGuardService) processPodContainers(pod corev1.Pod) {
 	readIopsVal, writeIopsVal := ParseIopsLimitFromAnnotations(pod.Annotations, s.config.ContainerReadIOPSLimit, s.config.ContainerWriteIOPSLimit)
 	readBps, writeBps := ParseBpsLimitFromAnnotations(pod.Annotations, s.config.ContainerReadBPSLimit, s.config.ContainerWriteBPSLimit)
 	for _, cs := range pod.Status.ContainerStatuses {
@@ -178,8 +178,7 @@ func (s *KubeDiskGuardService) ProcessExistingContainers() error {
 			continue
 		}
 		// 解析注解
-		readIops, _ := ParseIopsLimitFromAnnotations(pod.Annotations, s.config.ContainerReadIOPSLimit, s.config.ContainerWriteIOPSLimit)
-		s.processPodContainers(pod, readIops)
+		s.processPodContainers(pod)
 	}
 	return nil
 }
@@ -234,7 +233,7 @@ func (s *KubeDiskGuardService) WatchPodEvents() error {
 			if reflect.DeepEqual(old.Annotations, newAnn) && old.ReadIops == readIops && old.WriteIops == writeIops {
 				continue
 			}
-			s.processPodContainers(*pod, readIops)
+			s.processPodContainers(*pod)
 			podAnnotations[key] = struct {
 				Annotations map[string]string
 				ReadIops    int

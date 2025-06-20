@@ -15,7 +15,7 @@ type Runtime interface {
 	GetContainerByID(containerID string) (*ContainerInfo, error)
 
 	// ProcessContainer 处理容器
-	ProcessContainer(container *ContainerInfo) error
+	// ProcessContainer(container *ContainerInfo) error
 
 	// Close 关闭运行时连接
 	Close() error
