@@ -38,6 +38,10 @@
   export KUBELET_CLIENT_CERT_PATH=/etc/kubernetes/pki/client.pem
   export KUBELET_CLIENT_KEY_PATH=/etc/kubernetes/pki/client-key.pem
   export KUBELET_TOKEN_PATH=/tmp/my-debug-token
+  export KUBECONFIG_PATH=~/.kube/config
+  export CONTAINER_SOCKET_PATH=/var/run/docker.sock
+  export EXCLUDE_KEYWORDS="pause,istio-proxy,apisix"
+  export EXCLUDE_NAMESPACES="kube-system,kruise-system,psmdb,istio-system,koordinator-system,kyverno"
   ```
 
 ### 3. 常用调试命令
