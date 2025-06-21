@@ -73,28 +73,28 @@
 | 配置项 | 默认值 | 单位 | 描述 |
 | :--- | :--- | :--- | :--- |
 | `smart_limit_graded_thresholds` | `false` | 布尔 | 是否启用分级限速模式。**必须设为 `true` 才能使用以下策略**。|
-| `smart_limit_io_threshold_15m` | `0.8` | 比例 | 15分钟窗口的IOPS触发阈值。 |
-| `smart_limit_bps_threshold_15m` | `0.8` | 比例 | 15分钟窗口的BPS触发阈值。 |
+| `smart_limit_io_threshold_15m` | `8000` | IOPS | 15分钟窗口的IOPS触发阈值。 |
+| `smart_limit_bps_threshold_15m` | `8000` | BPS | 15分钟窗口的BPS触发阈值。 |
 | `smart_limit_iops_limit_15m` | `0` | IOPS | 触发15分钟策略后，施加的IOPS限制值。 |
 | `smart_limit_bps_limit_15m` | `0` | BPS | 触发15分钟策略后，施加的BPS限制值。 |
-| `smart_limit_io_threshold_30m` | `0.8` | 比例 | 30分钟窗口的IOPS触发阈值。 |
-| `smart_limit_bps_threshold_30m`| `0.8` | 比例 | 30分钟窗口的BPS触发阈值。 |
+| `smart_limit_io_threshold_30m` | `8000` | IOPS | 30分钟窗口的IOPS触发阈值。 |
+| `smart_limit_bps_threshold_30m`| `8000` | BPS | 30分钟窗口的BPS触发阈值。 |
 | `smart_limit_iops_limit_30m` | `0` | IOPS | 触发30分钟策略后，施加的IOPS限制值。 |
 | `smart_limit_bps_limit_30m` | `0` | BPS | 触发30分钟策略后，施加的BPS限制值。 |
-| `smart_limit_io_threshold_60m` | `0.8` | 比例 | 60分钟窗口的IOPS触发阈值。 |
-| `smart_limit_bps_threshold_60m`| `0.8` | 比例 | 60分钟窗口的BPS触发阈值。 |
+| `smart_limit_io_threshold_60m` | `8000` | IOPS | 60分钟窗口的IOPS触发阈值。 |
+| `smart_limit_bps_threshold_60m`| `8000` | BPS | 60分钟窗口的BPS触发阈值。 |
 | `smart_limit_iops_limit_60m` | `0` | IOPS | 触发60分钟策略后，施加的IOPS限制值。 |
 | `smart_limit_bps_limit_60m` | `0` | BPS | 触发60分钟策略后，施加的BPS限制值。 |
-| `smart_limit_remove_threshold` | `0.5` | 比例 | 所有窗口IO均需低于此阈值才能解除限速。 |
+| `smart_limit_remove_threshold` | `5000` | IOPS | 所有窗口IO均需低于此阈值才能解除限速。 |
 | `smart_limit_remove_delay` | `5` | 分钟 | 从限速被施加到可以开始检查解除的最小延迟。 |
 | `smart_limit_remove_check_interval` | `1` | 分钟 | 执行解除限速检查的最小时间间隔。 |
 
 ## 4. 最佳实践与配置建议
 
 1.  **阈值设置应有梯度**：
-    - `15m阈值` 应最敏感（例如 `0.7` 或 `70%`），用于捕捉突发。
-    - `30m阈值` 可以适中（例如 `0.8` 或 `80%`）。
-    - `60m阈值` 应最不敏感（例如 `0.9` 或 `90%`），只用于捕捉长期高负载。
+    - `15m阈值` 应最敏感（例如 `8000` IOPS），用于捕捉突发。
+    - `30m阈值` 可以适中（例如 `8000` IOPS）。
+    - `60m阈值` 应最不敏感（例如 `10000` IOPS），只用于捕捉长期高负载。
 
 2.  **限速值应有梯度**：
     - `15m限速值` 应最严格，以快速控制住IO风暴。
@@ -145,8 +145,8 @@
 
 | 环境变量 | 默认值 | 说明 |
 |---------|--------|------|
-| `SMART_LIMIT_HIGH_IO_THRESHOLD` | 0.8 | 高 IOPS 阈值 |
-| `SMART_LIMIT_HIGH_BPS_THRESHOLD` | 0.8 | 高 BPS 阈值（字节/秒） |
+| `SMART_LIMIT_HIGH_IO_THRESHOLD` | 8000 | 高 IOPS 阈值 |
+| `SMART_LIMIT_HIGH_BPS_THRESHOLD` | 8000 | 高 BPS 阈值（字节/秒） |
 
 ### 限速配置
 
@@ -182,13 +182,13 @@ spec:
           value: "10"
         # 高IO阈值1000 IOPS
         - name: SMART_LIMIT_HIGH_IO_THRESHOLD
-          value: "1000"
+          value: "10000"
         # 高BPS阈值1MB/s
         - name: SMART_LIMIT_HIGH_BPS_THRESHOLD
           value: "1048576"
         # 最小IOPS限速值
         - name: SMART_LIMIT_AUTO_IOPS
-          value: "500"
+          value: "5000"
         # 最小BPS限速值
         - name: SMART_LIMIT_AUTO_BPS
           value: "524288"
@@ -202,7 +202,7 @@ spec:
 metadata:
   annotations:
     io-limit/smart-limit: "true"           # 标识为智能限速
-    io-limit/auto-iops: "800"              # 自动计算的IOPS值
+    io-limit/auto-iops: "8000"              # 自动计算的IOPS值
     io-limit/auto-bps: "1048576"           # 自动计算的BPS值
     io-limit/limit-reason: "high-io-detected" # 限速原因
 ```
@@ -503,7 +503,7 @@ if trend.ReadIOPS15m > m.config.SmartLimitIOThreshold15m || ... {
 
 ### C.2 IOThreshold 的最大值是多少？
 
-- 阈值的单位是**比例**（如0.8），通常表示"磁盘最大能力的百分比"。
+- 阈值的单位是**绝对值**（如8000），通常表示"磁盘最大能力的百分比"。
 - 理论最大值为1.0（100%），即磁盘的最大能力。
 - 实际配置时**不建议设置为1.0**，因为磁盘在极限时会出现延迟抖动、队列堆积等问题。
 - **推荐值**：一般建议设置在0.7 ~ 0.9之间（即70% ~ 90%），以留有安全裕度。
