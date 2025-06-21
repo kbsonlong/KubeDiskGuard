@@ -3,10 +3,13 @@ package main
 import (
 	"os"
 	"testing"
+	"time"
 
+	"KubeDiskGuard/pkg/cadvisor"
 	"KubeDiskGuard/pkg/config"
 	"KubeDiskGuard/pkg/container"
 	"KubeDiskGuard/pkg/detector"
+	"KubeDiskGuard/pkg/kubeclient"
 	"KubeDiskGuard/pkg/service"
 
 	corev1 "k8s.io/api/core/v1"
@@ -129,7 +132,8 @@ func TestKubeletConfig(t *testing.T) {
 }
 
 type mockKubeClient struct {
-	pods []corev1.Pod
+	pods           []corev1.Pod
+	updatePodError error
 }
 
 func (m *mockKubeClient) GetPod(namespace, name string) (*corev1.Pod, error) {
@@ -142,8 +146,7 @@ func (m *mockKubeClient) GetPod(namespace, name string) (*corev1.Pod, error) {
 }
 
 func (m *mockKubeClient) UpdatePod(pod *corev1.Pod) (*corev1.Pod, error) {
-	// In a real mock, you'd update the pod in m.pods
-	return pod, nil
+	return pod, m.updatePodError
 }
 
 func (m *mockKubeClient) ListNodePods() ([]corev1.Pod, error) {
@@ -160,6 +163,38 @@ func (m *mockKubeClient) WatchPods() (watch.Interface, error) {
 
 func (m *mockKubeClient) WatchNodePods() (watch.Interface, error) {
 	return watch.NewFake(), nil
+}
+
+func (m *mockKubeClient) GetNodeSummary() (*kubeclient.NodeSummary, error) {
+	return &kubeclient.NodeSummary{}, nil
+}
+
+func (m *mockKubeClient) GetCadvisorMetrics() (string, error) {
+	return "", nil
+}
+
+func (m *mockKubeClient) ParseCadvisorMetrics(metrics string) (*cadvisor.CadvisorMetrics, error) {
+	return &cadvisor.CadvisorMetrics{}, nil
+}
+
+func (m *mockKubeClient) GetCadvisorIORate(containerID string, window time.Duration) (*cadvisor.IORate, error) {
+	return &cadvisor.IORate{}, nil
+}
+
+func (m *mockKubeClient) GetCadvisorAverageIORate(containerID string, windows []time.Duration) (*cadvisor.IORate, error) {
+	return &cadvisor.IORate{}, nil
+}
+
+func (m *mockKubeClient) CleanupCadvisorData(maxAge time.Duration) {
+	// No-op for mock
+}
+
+func (m *mockKubeClient) GetCadvisorStats() (containerCount, dataPointCount int) {
+	return 0, 0
+}
+
+func (m *mockKubeClient) ConvertCadvisorToIOStats(metrics *cadvisor.CadvisorMetrics, containerID string) *kubeclient.IOStats {
+	return &kubeclient.IOStats{}
 }
 
 func TestResetAllContainersIOPSLimit(t *testing.T) {

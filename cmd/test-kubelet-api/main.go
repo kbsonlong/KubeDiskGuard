@@ -3,10 +3,9 @@ package main
 import (
 	"flag"
 	"fmt"
-	"log"
 	"strings"
 
-	"KubeDiskGuard/pkg/kubelet"
+	"KubeDiskGuard/pkg/kubeclient"
 )
 
 func main() {
@@ -19,10 +18,15 @@ func main() {
 	)
 	flag.Parse()
 
-	// 创建kubelet客户端
-	client, err := kubelet.NewKubeletClient(*host, *port, *tokenPath, *caPath, *skipVerify)
-	if err != nil {
-		log.Fatalf("Failed to create kubelet client: %v", err)
+	// Manually create a KubeClient instance for testing purposes
+	client := &kubeclient.KubeClient{
+		NodeName:          "test-node", // Not used by the functions we are calling
+		KubeletHost:       *host,
+		KubeletPort:       *port,
+		KubeletTokenPath:  *tokenPath,
+		KubeletCAPath:     *caPath,
+		KubeletSkipVerify: *skipVerify,
+		SATokenPath:       *tokenPath, // Use the same token path for SA
 	}
 
 	fmt.Printf("Testing kubelet API at %s:%s\n", *host, *port)
@@ -56,14 +60,12 @@ func main() {
 	fmt.Println("Test completed")
 }
 
-func testHealthCheck(client *kubelet.KubeletClient) error {
-	// 这里可以添加健康检查逻辑
-	// 由于我们没有直接的健康检查方法，我们通过获取节点摘要来间接测试
+func testHealthCheck(client *kubeclient.KubeClient) error {
 	_, err := client.GetNodeSummary()
 	return err
 }
 
-func testNodeSummary(client *kubelet.KubeletClient) error {
+func testNodeSummary(client *kubeclient.KubeClient) error {
 	summary, err := client.GetNodeSummary()
 	if err != nil {
 		return err
@@ -95,7 +97,7 @@ func testNodeSummary(client *kubelet.KubeletClient) error {
 	return nil
 }
 
-func testCadvisorMetrics(client *kubelet.KubeletClient) error {
+func testCadvisorMetrics(client *kubeclient.KubeClient) error {
 	metrics, err := client.GetCadvisorMetrics()
 	if err != nil {
 		return err

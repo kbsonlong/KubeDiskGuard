@@ -14,7 +14,6 @@ import (
 	"KubeDiskGuard/pkg/cgroup"
 	"KubeDiskGuard/pkg/config"
 	"KubeDiskGuard/pkg/kubeclient"
-	"KubeDiskGuard/pkg/kubelet"
 )
 
 // ContainerIOHistory 容器IO历史记录
@@ -22,7 +21,7 @@ type ContainerIOHistory struct {
 	ContainerID string
 	PodName     string
 	Namespace   string
-	Stats       []*kubelet.IOStats
+	Stats       []*kubeclient.IOStats
 	LastUpdate  time.Time
 	mu          sync.RWMutex
 }
@@ -42,26 +41,24 @@ type LimitStatus struct {
 
 // SmartLimitManager 智能限速管理器
 type SmartLimitManager struct {
-	config        *config.Config
-	kubeClient    kubeclient.IKubeClient
-	kubeletClient *kubelet.KubeletClient
-	cgroupMgr     *cgroup.Manager
-	history       map[string]*ContainerIOHistory
-	limitStatus   map[string]*LimitStatus // 限速状态跟踪
-	mu            sync.RWMutex
-	stopCh        chan struct{}
+	config      *config.Config
+	kubeClient  kubeclient.IKubeClient
+	cgroupMgr   *cgroup.Manager
+	history     map[string]*ContainerIOHistory
+	limitStatus map[string]*LimitStatus // 限速状态跟踪
+	mu          sync.RWMutex
+	stopCh      chan struct{}
 }
 
 // NewSmartLimitManager 创建智能限速管理器
-func NewSmartLimitManager(config *config.Config, kubeClient kubeclient.IKubeClient, kubeletClient *kubelet.KubeletClient, cgroupMgr *cgroup.Manager) *SmartLimitManager {
+func NewSmartLimitManager(config *config.Config, kubeClient kubeclient.IKubeClient, cgroupMgr *cgroup.Manager) *SmartLimitManager {
 	return &SmartLimitManager{
-		config:        config,
-		kubeClient:    kubeClient,
-		kubeletClient: kubeletClient,
-		cgroupMgr:     cgroupMgr,
-		history:       make(map[string]*ContainerIOHistory),
-		limitStatus:   make(map[string]*LimitStatus),
-		stopCh:        make(chan struct{}),
+		config:      config,
+		kubeClient:  kubeClient,
+		cgroupMgr:   cgroupMgr,
+		history:     make(map[string]*ContainerIOHistory),
+		limitStatus: make(map[string]*LimitStatus),
+		stopCh:      make(chan struct{}),
 	}
 }
 
@@ -127,41 +124,40 @@ func (m *SmartLimitManager) cleanupLoop() {
 
 // collectIOStats 收集IO统计信息
 func (m *SmartLimitManager) collectIOStats() {
-	// 使用kubelet API获取IO数据
-	if m.kubeletClient != nil {
+	if m.kubeClient != nil {
 		m.collectIOStatsFromKubelet()
 		return
 	}
-
-	log.Println("Kubelet client not available, skipping IO stats collection")
+	log.Println("KubeClient not available, skipping IO stats collection")
 }
 
 // collectIOStatsFromKubelet 从kubelet API收集IO统计信息
 func (m *SmartLimitManager) collectIOStatsFromKubelet() {
-	// 尝试获取节点摘要
-	summary, err := m.kubeletClient.GetNodeSummary()
+	summary, err := m.kubeClient.GetNodeSummary()
 	if err != nil {
-		log.Printf("Failed to get node summary from kubelet: %v", err)
+		log.Printf("Failed to get node summary from kubelet: %v, falling back to cAdvisor metrics", err)
+		// Fallback to individual cAdvisor metrics if summary fails
+		m.collectIOStatsFromCadvisor()
 		return
 	}
 
-	// 处理每个Pod的容器统计
+	if len(summary.Pods) == 0 {
+		log.Println("Node summary contains no pods, trying cAdvisor metrics instead.")
+		m.collectIOStatsFromCadvisor()
+		return
+	}
+
 	for _, podStats := range summary.Pods {
 		podName := podStats.PodRef.Name
 		namespace := podStats.PodRef.Namespace
-
-		// 检查是否应该监控这个Pod
 		if !m.shouldMonitorPodByNamespace(namespace) {
 			continue
 		}
-
 		for _, containerStats := range podStats.Containers {
 			if containerStats.DiskIO == nil {
 				continue
 			}
-
-			// 转换统计信息
-			stats := &kubelet.IOStats{
+			stats := &kubeclient.IOStats{
 				ContainerID: containerStats.Name,
 				Timestamp:   containerStats.Timestamp,
 				ReadIOPS:    int64(containerStats.DiskIO.ReadIOPS),
@@ -169,35 +165,28 @@ func (m *SmartLimitManager) collectIOStatsFromKubelet() {
 				ReadBPS:     int64(containerStats.DiskIO.ReadBytes),
 				WriteBPS:    int64(containerStats.DiskIO.WriteBytes),
 			}
-
 			m.addIOStats(containerStats.Name, podName, namespace, stats)
 		}
-	}
-
-	// 如果节点摘要中没有足够的IO数据，尝试使用cAdvisor指标
-	if len(summary.Pods) == 0 {
-		m.collectIOStatsFromCadvisor()
 	}
 }
 
 // collectIOStatsFromCadvisor 从cAdvisor指标收集IO统计信息
 func (m *SmartLimitManager) collectIOStatsFromCadvisor() {
-	metrics, err := m.kubeletClient.GetCadvisorMetrics()
+	metrics, err := m.kubeClient.GetCadvisorMetrics()
 	if err != nil {
 		log.Printf("Failed to get cadvisor metrics: %v", err)
 		return
 	}
 
-	parsedMetrics, err := m.kubeletClient.ParseCadvisorMetrics(metrics)
+	parsedMetrics, err := m.kubeClient.ParseCadvisorMetrics(metrics)
 	if err != nil {
 		log.Printf("Failed to parse cadvisor metrics: %v", err)
 		return
 	}
 
-	// 获取当前节点上的Pod列表
 	pods, err := m.kubeClient.ListNodePodsWithKubeletFirst()
 	if err != nil {
-		log.Printf("Failed to get node pods: %v", err)
+		log.Printf("Failed to get node pods for cAdvisor mapping: %v", err)
 		return
 	}
 
@@ -210,11 +199,8 @@ func (m *SmartLimitManager) collectIOStatsFromCadvisor() {
 			if container.ContainerID == "" {
 				continue
 			}
-
 			containerID := parseContainerID(container.ContainerID)
-
-			// 从cAdvisor指标中查找容器数据
-			stats := m.kubeletClient.ConvertCadvisorToIOStats(parsedMetrics, containerID)
+			stats := m.kubeClient.ConvertCadvisorToIOStats(parsedMetrics, containerID)
 			if stats != nil {
 				m.addIOStats(containerID, pod.Name, pod.Namespace, stats)
 			}
@@ -223,7 +209,7 @@ func (m *SmartLimitManager) collectIOStatsFromCadvisor() {
 }
 
 // addIOStats 添加IO统计信息到历史记录
-func (m *SmartLimitManager) addIOStats(containerID, podName, namespace string, stats *kubelet.IOStats) {
+func (m *SmartLimitManager) addIOStats(containerID, podName, namespace string, stats *kubeclient.IOStats) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -233,7 +219,7 @@ func (m *SmartLimitManager) addIOStats(containerID, podName, namespace string, s
 			ContainerID: containerID,
 			PodName:     podName,
 			Namespace:   namespace,
-			Stats:       make([]*kubelet.IOStats, 0),
+			Stats:       make([]*kubeclient.IOStats, 0),
 		}
 		m.history[containerID] = history
 	}
@@ -322,7 +308,7 @@ func (m *SmartLimitManager) analyzeContainer(containerID string) {
 	}
 
 	history.mu.RLock()
-	stats := make([]*kubelet.IOStats, len(history.Stats))
+	stats := make([]*kubeclient.IOStats, len(history.Stats))
 	copy(stats, history.Stats)
 	history.mu.RUnlock()
 
@@ -428,7 +414,7 @@ type IOTrend struct {
 }
 
 // calculateIOTrend 计算IO趋势
-func (m *SmartLimitManager) calculateIOTrend(stats []*kubelet.IOStats) *IOTrend {
+func (m *SmartLimitManager) calculateIOTrend(stats []*kubeclient.IOStats) *IOTrend {
 	trend := &IOTrend{}
 
 	now := time.Now()

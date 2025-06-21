@@ -6,6 +6,18 @@ import (
 	"time"
 )
 
+// CadvisorMetrics cAdvisor指标数据
+type CadvisorMetrics struct {
+	ContainerFSCapacityBytes    map[string]float64
+	ContainerFSUsageBytes       map[string]float64
+	ContainerFSIoTimeSeconds    map[string]float64
+	ContainerFSIoTimeWeighted   map[string]float64
+	ContainerFSReadsBytesTotal  map[string]float64
+	ContainerFSWritesBytesTotal map[string]float64
+	ContainerFSReadsTotal       map[string]float64
+	ContainerFSWritesTotal      map[string]float64
+}
+
 // MetricPoint 指标数据点
 type MetricPoint struct {
 	ContainerID string
@@ -212,4 +224,31 @@ func (c *Calculator) GetTotalDataPoints() int {
 		total += len(points)
 	}
 	return total
+}
+
+// Update a new method to process CadvisorMetrics
+func (c *Calculator) Update(metrics *CadvisorMetrics, timestamp time.Time) {
+	for id, val := range metrics.ContainerFSReadsTotal {
+		c.AddMetricPoint(id, timestamp, val, metrics.ContainerFSWritesTotal[id], metrics.ContainerFSReadsBytesTotal[id], metrics.ContainerFSWritesBytesTotal[id])
+	}
+}
+
+// GetRate is a wrapper for CalculateIORate
+func (c *Calculator) GetRate(containerID string, window time.Duration) (*IORate, error) {
+	return c.CalculateIORate(containerID, window)
+}
+
+// GetAverageRate is a wrapper for CalculateAverageIORate
+func (c *Calculator) GetAverageRate(containerID string, windows []time.Duration) (*IORate, error) {
+	return c.CalculateAverageIORate(containerID, windows)
+}
+
+// Cleanup is a wrapper for CleanupOldData
+func (c *Calculator) Cleanup(maxAge time.Duration) {
+	c.CleanupOldData(maxAge)
+}
+
+// Stats returns the number of containers and total data points
+func (c *Calculator) Stats() (containerCount, dataPointCount int) {
+	return c.GetContainerCount(), c.GetTotalDataPoints()
 }

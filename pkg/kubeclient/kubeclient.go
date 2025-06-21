@@ -2,14 +2,11 @@ package kubeclient
 
 import (
 	"context"
-	"crypto/tls"
-	"crypto/x509"
-	"encoding/json"
 	"fmt"
-	"io/ioutil"
-	"net/http"
 	"os"
 	"time"
+
+	"KubeDiskGuard/pkg/cadvisor"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -34,6 +31,7 @@ type KubeClient struct {
 	KubeletClientKey  string
 	KubeletTokenPath  string
 	SATokenPath       string
+	cadvisorCalc      *cadvisor.Calculator
 }
 
 // IKubeClient 接口，便于mock
@@ -42,7 +40,14 @@ type IKubeClient interface {
 	WatchNodePods() (watch.Interface, error)
 	GetPod(namespace, name string) (*corev1.Pod, error)
 	UpdatePod(pod *corev1.Pod) (*corev1.Pod, error)
-	WatchPods() (watch.Interface, error)
+	GetNodeSummary() (*NodeSummary, error)
+	GetCadvisorMetrics() (string, error)
+	ParseCadvisorMetrics(metrics string) (*cadvisor.CadvisorMetrics, error)
+	GetCadvisorIORate(containerID string, window time.Duration) (*cadvisor.IORate, error)
+	GetCadvisorAverageIORate(containerID string, windows []time.Duration) (*cadvisor.IORate, error)
+	CleanupCadvisorData(maxAge time.Duration)
+	GetCadvisorStats() (containerCount, dataPointCount int)
+	ConvertCadvisorToIOStats(metrics *cadvisor.CadvisorMetrics, containerID string) *IOStats
 }
 
 // 确保KubeClient实现IKubeClient
@@ -116,77 +121,8 @@ func NewKubeClient(nodeName, kubeconfigPath string) (*KubeClient, error) {
 		KubeletClientKey:  clientKey,
 		KubeletTokenPath:  tokenPath,
 		SATokenPath:       saTokenPath,
+		cadvisorCalc:      cadvisor.NewCalculator(),
 	}, nil
-}
-
-// GetNodePodsFromKubelet 使用kubelet API获取本节点Pod信息，支持ServiceAccount Token认证和自定义证书
-func (k *KubeClient) GetNodePodsFromKubelet() ([]corev1.Pod, error) {
-	kubeletURL := fmt.Sprintf("https://%s:%s/pods", k.KubeletHost, k.KubeletPort)
-
-	// 读取Token（可选）
-	token := ""
-	tokenPath := k.KubeletTokenPath
-	if tokenPath == "" {
-		tokenPath = k.SATokenPath
-	}
-	if tokenPath != "" {
-		b, err := ioutil.ReadFile(tokenPath)
-		if err == nil {
-			token = string(b)
-		}
-	}
-
-	// 构造TLS配置
-	tlsConfig := &tls.Config{
-		InsecureSkipVerify: k.KubeletSkipVerify,
-	}
-	if k.KubeletCAPath != "" {
-		caCert, err := ioutil.ReadFile(k.KubeletCAPath)
-		if err == nil {
-			caPool := x509.NewCertPool()
-			caPool.AppendCertsFromPEM(caCert)
-			tlsConfig.RootCAs = caPool
-		}
-	}
-	if k.KubeletClientCert != "" && k.KubeletClientKey != "" {
-		cert, err := tls.LoadX509KeyPair(k.KubeletClientCert, k.KubeletClientKey)
-		if err == nil {
-			tlsConfig.Certificates = []tls.Certificate{cert}
-		}
-	}
-
-	client := &http.Client{
-		Transport: &http.Transport{
-			TLSClientConfig: tlsConfig,
-		},
-		Timeout: 10 * time.Second,
-	}
-
-	req, err := http.NewRequest("GET", kubeletURL, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %v", err)
-	}
-	req.Header.Set("Accept", "application/json")
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to request kubelet API: %v", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("kubelet API returned status: %d", resp.StatusCode)
-	}
-
-	var podList corev1.PodList
-	if err := json.NewDecoder(resp.Body).Decode(&podList); err != nil {
-		return nil, fmt.Errorf("failed to decode kubelet response: %v", err)
-	}
-
-	return podList.Items, nil
 }
 
 // ListNodePods 获取本节点所有Pod（API Server）
@@ -235,13 +171,4 @@ func (k *KubeClient) UpdatePod(pod *corev1.Pod) (*corev1.Pod, error) {
 		return nil, fmt.Errorf("failed to update pod: %v", err)
 	}
 	return pod, nil
-}
-
-// WatchPods 监听本节点所有Pod事件
-func (k *KubeClient) WatchPods() (watch.Interface, error) {
-	fieldSelector := fields.OneTermEqualSelector("spec.nodeName", k.NodeName).String()
-	return k.Clientset.CoreV1().Pods("").Watch(context.TODO(), metav1.ListOptions{
-		FieldSelector: fieldSelector,
-		Watch:         true,
-	})
 }

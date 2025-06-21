@@ -9,7 +9,6 @@ import (
 
 	"KubeDiskGuard/pkg/config"
 	"KubeDiskGuard/pkg/kubeclient"
-	"KubeDiskGuard/pkg/kubelet"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -58,6 +57,7 @@ func newTestManager(cfg *config.Config) *SmartLimitManager {
 		limitStatus: make(map[string]*LimitStatus),
 		stopCh:      make(chan struct{}),
 		kubeClient:  &mockKubeClient{},
+		// No cgroupMgr needed for these specific tests
 	}
 }
 
@@ -65,7 +65,7 @@ func TestCalculateIOTrend(t *testing.T) {
 	manager := newTestManager(&config.Config{})
 
 	now := time.Now()
-	stats := []*kubelet.IOStats{
+	stats := []*kubeclient.IOStats{
 		{Timestamp: now.Add(-2 * time.Minute), ReadIOPS: 100, WriteIOPS: 200, ReadBPS: 1000, WriteBPS: 2000},
 		{Timestamp: now.Add(-1 * time.Minute), ReadIOPS: 160, WriteIOPS: 320, ReadBPS: 1600, WriteBPS: 3200}, // delta: 60, 120, 600, 1200 over 60s
 	}

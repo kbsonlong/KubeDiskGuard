@@ -13,7 +13,6 @@ import (
 	"KubeDiskGuard/pkg/container"
 	"KubeDiskGuard/pkg/detector"
 	"KubeDiskGuard/pkg/kubeclient"
-	"KubeDiskGuard/pkg/kubelet"
 	"KubeDiskGuard/pkg/runtime"
 	"KubeDiskGuard/pkg/smartlimit"
 
@@ -91,16 +90,7 @@ func NewKubeDiskGuardService(cfg *config.Config) (*KubeDiskGuardService, error) 
 
 	if cfg.SmartLimitEnabled {
 		cgroupMgr := cgroup.NewManager(cfg.CgroupVersion)
-		var kubeletClient *kubelet.KubeletClient
-		if cfg.SmartLimitUseKubeletAPI && cfg.KubeletHost != "" && cfg.KubeletPort != "" {
-			kubeletClient, err = kubelet.NewKubeletClient(cfg.KubeletHost, cfg.KubeletPort, cfg.KubeletTokenPath, cfg.KubeletCAPath, cfg.KubeletSkipVerify)
-			if err != nil {
-				log.Printf("Failed to create kubelet client: %v", err)
-			} else {
-				log.Printf("Kubelet client initialized for host: %s:%s", cfg.KubeletHost, cfg.KubeletPort)
-			}
-		}
-		service.smartLimit = smartlimit.NewSmartLimitManager(cfg, service.kubeClient, kubeletClient, cgroupMgr)
+		service.smartLimit = smartlimit.NewSmartLimitManager(cfg, service.kubeClient, cgroupMgr)
 		log.Printf("Smart limit manager initialized")
 	}
 
@@ -289,23 +279,24 @@ func (s *KubeDiskGuardService) ResetAllContainersIOPSLimit() error {
 	return nil
 }
 
+// NewKubeDiskGuardServiceWithKubeClient is a constructor for testing with a mock kubeclient
 func NewKubeDiskGuardServiceWithKubeClient(cfg *config.Config, kc kubeclient.IKubeClient) (*KubeDiskGuardService, error) {
 	service := &KubeDiskGuardService{
 		Config:     cfg,
 		kubeClient: kc,
 	}
+
 	var err error
-	switch cfg.ContainerRuntime {
-	case "docker":
-		service.runtime, err = runtime.NewDockerRuntime(cfg)
-	case "containerd":
-		service.runtime, err = runtime.NewContainerdRuntime(cfg)
-	default:
-		service.runtime, err = runtime.NewDockerRuntime(cfg) // default
-	}
+	service.runtime, err = runtime.NewDockerRuntime(cfg)
 	if err != nil {
 		return nil, err
 	}
+
+	if cfg.SmartLimitEnabled {
+		cgroupMgr := cgroup.NewManager(cfg.CgroupVersion)
+		service.smartLimit = smartlimit.NewSmartLimitManager(cfg, kc, cgroupMgr)
+	}
+
 	return service, nil
 }
 
