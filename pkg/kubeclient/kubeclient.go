@@ -40,6 +40,8 @@ type KubeClient struct {
 type IKubeClient interface {
 	ListNodePodsWithKubeletFirst() ([]corev1.Pod, error)
 	WatchNodePods() (watch.Interface, error)
+	GetPod(namespace, name string) (*corev1.Pod, error)
+	UpdatePod(pod *corev1.Pod) (*corev1.Pod, error)
 }
 
 // 确保KubeClient实现IKubeClient
@@ -214,4 +216,22 @@ func (k *KubeClient) WatchNodePods() (watch.Interface, error) {
 		FieldSelector: fieldSelector,
 		Watch:         true,
 	})
+}
+
+// GetPod 获取指定命名空间和名称的Pod
+func (k *KubeClient) GetPod(namespace, name string) (*corev1.Pod, error) {
+	pod, err := k.Clientset.CoreV1().Pods(namespace).Get(context.TODO(), name, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get pod: %v", err)
+	}
+	return pod, nil
+}
+
+// UpdatePod 更新指定Pod
+func (k *KubeClient) UpdatePod(pod *corev1.Pod) (*corev1.Pod, error) {
+	pod, err := k.Clientset.CoreV1().Pods(pod.Namespace).Update(context.TODO(), pod, metav1.UpdateOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to update pod: %v", err)
+	}
+	return pod, nil
 }

@@ -25,27 +25,55 @@ type Config struct {
 	KubeletHost             string   `json:"kubelet_host,omitempty"`          // kubelet主机地址
 	KubeletPort             string   `json:"kubelet_port,omitempty"`          // kubelet端口
 	KubeConfigPath          string   // 支持集群外部运行
+
+	// 智能限速配置
+	SmartLimitEnabled          bool    `json:"smart_limit_enabled"`
+	SmartLimitMonitorInterval  int     `json:"smart_limit_monitor_interval"`   // 监控间隔（秒）
+	SmartLimitHistoryWindow    int     `json:"smart_limit_history_window"`     // 历史数据窗口（分钟）
+	SmartLimitHighIOThreshold  float64 `json:"smart_limit_high_io_threshold"`  // 高IO阈值
+	SmartLimitHighBPSThreshold float64 `json:"smart_limit_high_bps_threshold"` // 高BPS阈值
+	SmartLimitAutoIOPS         int     `json:"smart_limit_auto_iops"`          // 自动限速IOPS值
+	SmartLimitAutoBPS          int     `json:"smart_limit_auto_bps"`           // 自动限速BPS值
+	SmartLimitAnnotationPrefix string  `json:"smart_limit_annotation_prefix"`  // 注解前缀
+
+	// kubelet API配置
+	KubeletTokenPath        string `json:"kubelet_token_path,omitempty"`  // kubelet token路径
+	KubeletCAPath           string `json:"kubelet_ca_path,omitempty"`     // kubelet CA证书路径
+	KubeletSkipVerify       bool   `json:"kubelet_skip_verify,omitempty"` // 是否跳过kubelet证书验证
+	SmartLimitUseKubeletAPI bool   `json:"smart_limit_use_kubelet_api"`   // 是否使用kubelet API获取IO数据
 }
 
 // GetDefaultConfig 获取默认配置
 func GetDefaultConfig() *Config {
 	return &Config{
-		ContainerIOPSLimit:      500,
-		ContainerReadIOPSLimit:  500,
-		ContainerWriteIOPSLimit: 500,
-		ContainerReadBPSLimit:   0, // 默认不限制读
-		ContainerWriteBPSLimit:  0, // 默认不限制写
-		DataMount:               "/data",
-		ExcludeKeywords:         []string{"pause", "istio-proxy", "psmdb", "kube-system", "koordinator", "apisix"},
-		ExcludeNamespaces:       []string{"kube-system"},
-		ExcludeLabelSelector:    "",
-		ContainerdNamespace:     "k8s.io",
-		ContainerRuntime:        "auto",
-		CgroupVersion:           "auto",
-		ContainerSocketPath:     "/run/containerd/containerd.sock",
-		KubeletHost:             "",
-		KubeletPort:             "",
-		KubeConfigPath:          "",
+		ContainerIOPSLimit:         500,
+		ContainerReadIOPSLimit:     500,
+		ContainerWriteIOPSLimit:    500,
+		ContainerReadBPSLimit:      0, // 默认不限制读
+		ContainerWriteBPSLimit:     0, // 默认不限制写
+		DataMount:                  "/data",
+		ExcludeKeywords:            []string{"pause", "istio-proxy", "psmdb", "kube-system", "koordinator", "apisix"},
+		ExcludeNamespaces:          []string{"kube-system"},
+		ExcludeLabelSelector:       "",
+		ContainerdNamespace:        "k8s.io",
+		ContainerRuntime:           "auto",
+		CgroupVersion:              "auto",
+		ContainerSocketPath:        "/run/containerd/containerd.sock",
+		KubeletHost:                "",
+		KubeletPort:                "",
+		KubeConfigPath:             "",
+		SmartLimitEnabled:          false,
+		SmartLimitMonitorInterval:  60,
+		SmartLimitHistoryWindow:    10,
+		SmartLimitHighIOThreshold:  0.8,
+		SmartLimitHighBPSThreshold: 0.8,
+		SmartLimitAutoIOPS:         0,
+		SmartLimitAutoBPS:          0,
+		SmartLimitAnnotationPrefix: "",
+		KubeletTokenPath:           "",
+		KubeletCAPath:              "",
+		KubeletSkipVerify:          false,
+		SmartLimitUseKubeletAPI:    false,
 	}
 }
 
@@ -119,6 +147,72 @@ func LoadFromEnv(config *Config) {
 
 	if v := os.Getenv("KUBECONFIG_PATH"); v != "" {
 		config.KubeConfigPath = v
+	}
+
+	if val := os.Getenv("SMART_LIMIT_ENABLED"); val != "" {
+		if enabled, err := strconv.ParseBool(val); err == nil {
+			config.SmartLimitEnabled = enabled
+		}
+	}
+
+	if val := os.Getenv("SMART_LIMIT_MONITOR_INTERVAL"); val != "" {
+		if interval, err := strconv.Atoi(val); err == nil {
+			config.SmartLimitMonitorInterval = interval
+		}
+	}
+
+	if val := os.Getenv("SMART_LIMIT_HISTORY_WINDOW"); val != "" {
+		if window, err := strconv.Atoi(val); err == nil {
+			config.SmartLimitHistoryWindow = window
+		}
+	}
+
+	if val := os.Getenv("SMART_LIMIT_HIGH_IO_THRESHOLD"); val != "" {
+		if threshold, err := strconv.ParseFloat(val, 64); err == nil {
+			config.SmartLimitHighIOThreshold = threshold
+		}
+	}
+
+	if val := os.Getenv("SMART_LIMIT_HIGH_BPS_THRESHOLD"); val != "" {
+		if threshold, err := strconv.ParseFloat(val, 64); err == nil {
+			config.SmartLimitHighBPSThreshold = threshold
+		}
+	}
+
+	if val := os.Getenv("SMART_LIMIT_AUTO_IOPS"); val != "" {
+		if iops, err := strconv.Atoi(val); err == nil {
+			config.SmartLimitAutoIOPS = iops
+		}
+	}
+
+	if val := os.Getenv("SMART_LIMIT_AUTO_BPS"); val != "" {
+		if bps, err := strconv.Atoi(val); err == nil {
+			config.SmartLimitAutoBPS = bps
+		}
+	}
+
+	if val := os.Getenv("SMART_LIMIT_ANNOTATION_PREFIX"); val != "" {
+		config.SmartLimitAnnotationPrefix = val
+	}
+
+	if val := os.Getenv("KUBELET_TOKEN_PATH"); val != "" {
+		config.KubeletTokenPath = val
+	}
+
+	if val := os.Getenv("KUBELET_CA_PATH"); val != "" {
+		config.KubeletCAPath = val
+	}
+
+	if val := os.Getenv("KUBELET_SKIP_VERIFY"); val != "" {
+		if skipVerify, err := strconv.ParseBool(val); err == nil {
+			config.KubeletSkipVerify = skipVerify
+		}
+	}
+
+	if val := os.Getenv("SMART_LIMIT_USE_KUBELET_API"); val != "" {
+		if useKubeletAPI, err := strconv.ParseBool(val); err == nil {
+			config.SmartLimitUseKubeletAPI = useKubeletAPI
+		}
 	}
 }
 

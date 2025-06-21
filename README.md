@@ -25,8 +25,10 @@
 - 通过 client-go 监听本节点 Pod 事件，自动为新容器或注解变更的容器设置/调整 IOPS/BPS 限制
 - **服务重启时保持IOPS/BPS限制一致性**：重启后会自动获取Pod注解信息，确保现有容器的IOPS/BPS限制与注解配置保持一致
 - **优先使用kubelet API**：减少API Server压力，提高性能和可靠性
+- **多数据源支持**：支持kubelet API和cgroup文件系统两种IO数据获取方式，自动回退
 - 支持多维度过滤（关键字、命名空间、正则、K8s label selector）
 - 支持通过注解动态调整单个 Pod 的 IOPS/BPS 限制
+- **智能限速功能**：自动监控容器IO使用情况，检测到长时间高IO时自动为Pod添加限速注解
 - 配置灵活，环境变量可控
 - 健康检查、详细日志、单元测试
 
@@ -48,6 +50,7 @@ flowchart TD
         Kubelet["Kubelet (原生组件)"]
         Runtime["Docker/Containerd"]
         Service["KubeDiskGuard (DaemonSet)"]
+        SmartLimit["智能限速监控"]
         Cgroup["Cgroup v1/v2"]
         Pod1["Pod (含注解)"]
         Pod2["Pod (含注解)"]
@@ -58,6 +61,8 @@ flowchart TD
     APIServer -- "Pod事件/变更" --> Service
     Service -- "查找本地容器/注解" --> Runtime
     Service -- "设置IOPS限制" --> Cgroup
+    SmartLimit -- "监控IO统计" --> Cgroup
+    SmartLimit -- "自动添加限速注解" --> APIServer
     Runtime -- "管理容器生命周期" --> Cgroup
     Pod1 -. "由Kubelet调度" .-> Runtime
     Pod2 -. "由Kubelet调度" .-> Runtime
@@ -92,10 +97,16 @@ metadata:
     iops-limit/write-iops: "800"   # 写IOPS限制
     # 或统一设置
     iops-limit/iops: "1000"        # 读写IOPS都为1000
+    # 智能限速注解（自动添加）
+    iops-limit/smart-limit: "true" # 标识为智能限速
+    iops-limit/auto-iops: "800"    # 自动计算的IOPS值
+    iops-limit/auto-bps: "1048576" # 自动计算的BPS值（1MB/s）
+    iops-limit/limit-reason: "high-io-detected" # 限速原因
 ```
 
 - 优先级：`read-iops`/`write-iops` > `iops`
 - 注解为0表示解除对应方向的IOPS/BPS限速
+- 智能限速注解由系统自动添加，用户无需手动设置
 
 ### 2. 过滤机制
 
@@ -135,8 +146,17 @@ env:
 | `KUBELET_CA_PATH` |  | kubelet API CA证书路径 |
 | `KUBELET_CLIENT_CERT_PATH` |  | kubelet API客户端证书路径 |
 | `KUBELET_CLIENT_KEY_PATH` |  | kubelet API客户端私钥路径 |
-| `KUBELET_TOKEN_PATH` |  | kubelet API Token路径（本地调试可选） |
+| `KUBELET_TOKEN_PATH` |  | kubelet API Token路径 |
 | `KUBELET_SKIP_VERIFY` |  | kubelet API跳过验证 |
+| `SMART_LIMIT_ENABLED` | false | 是否启用智能限速功能 |
+| `SMART_LIMIT_MONITOR_INTERVAL` | 60 | 智能限速监控间隔（秒） |
+| `SMART_LIMIT_HISTORY_WINDOW` | 10 | 智能限速历史数据窗口（分钟） |
+| `SMART_LIMIT_HIGH_IO_THRESHOLD` | 0.8 | 智能限速高IO阈值（百分比） |
+| `SMART_LIMIT_HIGH_BPS_THRESHOLD` | 0.8 | 智能限速高BPS阈值（字节/秒） |
+| `SMART_LIMIT_AUTO_IOPS` | 0 | 智能限速自动IOPS值（0表示基于当前IO计算） |
+| `SMART_LIMIT_AUTO_BPS` | 0 | 智能限速自动BPS值（0表示基于当前IO计算） |
+| `SMART_LIMIT_ANNOTATION_PREFIX` | iops-limit | 智能限速注解前缀 |
+| `SMART_LIMIT_USE_KUBELET_API` | false | 是否使用kubelet API获取IO数据 |
 
 #### DaemonSet注入节点名示例：
 ```yaml
@@ -158,6 +178,30 @@ env:
 2. 修改 DaemonSet YAML，配置镜像和环境变量
 3. 部署到集群：`kubectl apply -f k8s-daemonset.yaml`
 4. 查看日志：`kubectl logs -n kube-system -l app=iops-limit-service -f`
+
+#### 智能限速配置示例：
+
+```yaml
+env:
+  # 启用智能限速
+  - name: SMART_LIMIT_ENABLED
+    value: "true"
+  # 监控间隔60秒
+  - name: SMART_LIMIT_MONITOR_INTERVAL
+    value: "60"
+  # 历史数据窗口10分钟
+  - name: SMART_LIMIT_HISTORY_WINDOW
+    value: "10"
+  # 高IO阈值80%
+  - name: SMART_LIMIT_HIGH_IO_THRESHOLD
+    value: "0.8"
+  # 最小IOPS限速值
+  - name: SMART_LIMIT_AUTO_IOPS
+    value: "500"
+  # 最小BPS限速值（1MB/s）
+  - name: SMART_LIMIT_AUTO_BPS
+    value: "1048576"
+```
 
 ### 5. 验证与排查
 
@@ -218,110 +262,4 @@ find /sys/fs/cgroup -name "*[container-id]*"
 
 ### 4. 日志与监控
 查看服务日志：
-```bash
-kubectl logs -n kube-system -l app=iops-limit-service -f
 ```
-服务会输出配置信息、容器检测和过滤、IOPS/BPS 限制设置、错误信息等。
-
-**重要说明**：服务重启时会自动获取Pod注解信息，确保现有容器的IOPS/BPS限制与注解配置保持一致。如果无法获取Pod信息（如网络问题），会使用默认配置作为fallback。
-
-### 5. 健康检查
-服务包含 liveness 和 readiness 探针，确保服务正常运行。
-
-### 6. 服务重启行为
-- **正常情况**：重启后会自动获取本节点所有Running状态的Pod注解，并应用相应的IOPS/BPS限制
-- **网络异常**：如果无法连接Kubernetes API，会使用默认配置处理现有容器
-- **日志标识**：日志中会明确显示是使用Pod特定限制还是默认限制
-  - `Applied Pod-specific IOPS limit for container xxx (pod: namespace/name): 1000`
-  - `Applied default IOPS limit for container xxx: 500`
-
-### 7. kubelet API 使用说明
-- **优先使用**：服务优先使用kubelet API获取Pod信息，减少API Server压力
-- **自动回退**：如果kubelet API不可用，自动回退到API Server
-- **配置说明**：
-  - `KUBELET_HOST`: kubelet服务地址，默认为localhost
-  - `KUBELET_PORT`: kubelet API端口，默认为10250
-- **日志标识**：
-  - `Successfully got X pods from kubelet API`
-  - `Failed to get pods from kubelet API: xxx, falling back to API Server`
-
-## 单元测试
-
-本项目已包含完善的单元测试，覆盖注解解析、容器查找、动态限速、过滤逻辑等核心功能。
-
-运行所有测试：
-
-```bash
-go test -v
-```
-
-## 常见问题与注意事项
-
-- 注解变更后通常几秒内自动生效
-- 推荐 K8s 1.20+，理论上 1.16+ 兼容
-- 仅主支持单数据盘挂载点，如需多盘可扩展
-- IOPS/BPS 限制只对整个 NVMe 设备生效，不对分区生效
-- 需以特权模式运行，访问 cgroup 和容器运行时
-- 正确配置过滤关键字，避免影响系统容器
-- 服务包含健康检查和详细日志输出
-
-## 许可证
-
-MIT License 
-
-## 本地开发与调试
-
-### 1. 必要环境变量
-
-- `NODE_NAME`：必须，节点名，建议通过 Downward API 注入
-- `KUBELET_HOST`、`KUBELET_PORT`：kubelet API 地址和端口，默认 localhost:10250
-- `KUBELET_SKIP_VERIFY`：本地调试可设为 true 跳过 TLS 校验
-- `KUBELET_CA_PATH`：kubelet API CA 证书路径（PEM，可选）
-- `KUBELET_CLIENT_CERT_PATH`/`KUBELET_CLIENT_KEY_PATH`：客户端证书/私钥（PEM，可选）
-- `KUBELET_TOKEN_PATH`：kubelet API Token 路径（本地调试可选，若不设置则不加 Authorization header）
-
-### 2. DaemonSet 注入节点名示例
-
-```yaml
-env:
-  - name: NODE_NAME
-    valueFrom:
-      fieldRef:
-        fieldPath: spec.nodeName
-```
-
-### 3. 本地调试典型用法
-
-- 若本地无 Token，可不设置 `KUBELET_TOKEN_PATH`，kubelet 需允许匿名访问或配置合适的 RBAC。
-- 如需安全访问本地 kubelet，可指定 CA、客户端证书、私钥：
-
-```yaml
-env:
-  - name: KUBELET_CA_PATH
-    value: "/etc/kubernetes/pki/kubelet-ca.pem"
-  - name: KUBELET_CLIENT_CERT_PATH
-    value: "/etc/kubernetes/pki/client.pem"
-  - name: KUBELET_CLIENT_KEY_PATH
-    value: "/etc/kubernetes/pki/client-key.pem"
-  - name: KUBELET_TOKEN_PATH
-    value: "/tmp/my-debug-token"
-  - name: KUBELET_SKIP_VERIFY
-    value: "true"
-```
-
-- 推荐本地开发时用 `KUBELET_SKIP_VERIFY=true`，生产环境建议配置 CA 证书和 Token。
-
-### 4. 典型调试场景
-
-- **本地无Token，跳过认证**：
-  - 只需设置 `KUBELET_HOST`、`KUBELET_PORT`、`KUBELET_SKIP_VERIFY=true`，不设置 `KUBELET_TOKEN_PATH`。
-- **本地有自定义Token**：
-  - 设置 `KUBELET_TOKEN_PATH` 指向本地 Token 文件。
-- **本地自签名证书**：
-  - 设置 `KUBELET_CA_PATH`，如有双向认证再加 `KUBELET_CLIENT_CERT_PATH` 和 `KUBELET_CLIENT_KEY_PATH`。
-
----
-
-## 变更历史
-
-[CHANGELOG.md](./docs/CHANGELOG.md)

@@ -318,8 +318,22 @@ type mockKubeClient struct {
 func (m *mockKubeClient) ListNodePodsWithKubeletFirst() ([]corev1.Pod, error) {
 	return m.pods, nil
 }
+
 func (m *mockKubeClient) WatchNodePods() (watch.Interface, error) {
 	return nil, nil
+}
+
+func (m *mockKubeClient) GetPod(namespace, name string) (*corev1.Pod, error) {
+	for _, pod := range m.pods {
+		if pod.Namespace == namespace && pod.Name == name {
+			return &pod, nil
+		}
+	}
+	return nil, nil
+}
+
+func (m *mockKubeClient) UpdatePod(pod *corev1.Pod) (*corev1.Pod, error) {
+	return pod, nil
 }
 
 func TestResetAllContainersIOPSLimit(t *testing.T) {

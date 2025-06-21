@@ -5,12 +5,16 @@ import (
 	"log"
 	"os"
 	"reflect"
+	"strconv"
+	"time"
 
+	"KubeDiskGuard/pkg/cgroup"
 	"KubeDiskGuard/pkg/config"
 	"KubeDiskGuard/pkg/container"
 	"KubeDiskGuard/pkg/detector"
 	"KubeDiskGuard/pkg/kubeclient"
 	"KubeDiskGuard/pkg/runtime"
+	"KubeDiskGuard/pkg/smartlimit"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -22,6 +26,7 @@ type KubeDiskGuardService struct {
 	config     *config.Config
 	runtime    container.Runtime
 	kubeClient kubeclient.IKubeClient
+	smartLimit *smartlimit.SmartLimitManager
 }
 
 // NewKubeDiskGuardService 创建KubeDiskGuardService
@@ -68,6 +73,33 @@ func NewKubeDiskGuardService(config *config.Config) (*KubeDiskGuardService, erro
 	service.kubeClient, err = kubeclient.NewKubeClient(nodeName, config.KubeConfigPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create kubeclient: %v", err)
+	}
+
+	// 初始化智能限速管理器
+	if config.SmartLimitEnabled {
+		cgroupMgr := cgroup.NewManager(config.CgroupVersion)
+		smartLimitConfig := &smartlimit.SmartLimitConfig{
+			Enabled:           config.SmartLimitEnabled,
+			MonitorInterval:   time.Duration(config.SmartLimitMonitorInterval) * time.Second,
+			HistoryWindow:     time.Duration(config.SmartLimitHistoryWindow) * time.Minute,
+			HighIOThreshold:   config.SmartLimitHighIOThreshold,
+			HighBPSThreshold:  config.SmartLimitHighBPSThreshold,
+			AutoLimitIOPS:     config.SmartLimitAutoIOPS,
+			AutoLimitBPS:      config.SmartLimitAutoBPS,
+			AnnotationPrefix:  config.SmartLimitAnnotationPrefix,
+			ExcludeNamespaces: config.ExcludeNamespaces,
+
+			// kubelet API配置
+			UseKubeletAPI:     config.SmartLimitUseKubeletAPI,
+			KubeletHost:       config.KubeletHost,
+			KubeletPort:       config.KubeletPort,
+			KubeletTokenPath:  config.KubeletTokenPath,
+			KubeletCAPath:     config.KubeletCAPath,
+			KubeletSkipVerify: config.KubeletSkipVerify,
+		}
+
+		service.smartLimit = smartlimit.NewSmartLimitManager(smartLimitConfig, cgroupMgr, service.kubeClient)
+		log.Printf("Smart limit manager initialized with config: %+v", smartLimitConfig)
 	}
 
 	return service, nil
@@ -250,32 +282,48 @@ func (s *KubeDiskGuardService) WatchPodEvents() error {
 	return nil
 }
 
-// ParseIopsLimitFromAnnotations 解析注解中的iops限制（分别支持读写）
+// ParseIopsLimitFromAnnotations 从Pod注解中解析IOPS限制
 func ParseIopsLimitFromAnnotations(ann map[string]string, defaultRead, defaultWrite int) (readIops, writeIops int) {
-	readIops, writeIops = defaultRead, defaultWrite
-	if v, ok := ann["iops-limit/read-iops"]; ok {
-		var val int
-		_, err := fmt.Sscanf(v, "%d", &val)
-		if err == nil && val >= 0 {
-			readIops = val
+	if ann == nil {
+		return defaultRead, defaultWrite
+	}
+
+	// 检查是否有智能限速注解
+	if smartLimit, exists := ann["iops-limit/smart-limit"]; exists && smartLimit == "true" {
+		if autoIOPS, exists := ann["iops-limit/auto-iops"]; exists {
+			if iops, err := strconv.Atoi(autoIOPS); err == nil && iops > 0 {
+				return iops, iops // 智能限速时读写使用相同值
+			}
 		}
 	}
-	if v, ok := ann["iops-limit/write-iops"]; ok {
-		var val int
-		_, err := fmt.Sscanf(v, "%d", &val)
-		if err == nil && val >= 0 {
-			writeIops = val
+
+	// 原有的注解解析逻辑
+	if val, exists := ann["iops-limit"]; exists {
+		if iops, err := strconv.Atoi(val); err == nil && iops > 0 {
+			return iops, iops
 		}
 	}
-	// 通用iops注解，若存在，覆盖读写
-	if v, ok := ann["iops-limit/iops"]; ok {
-		var val int
-		_, err := fmt.Sscanf(v, "%d", &val)
-		if err == nil && val >= 0 {
-			readIops, writeIops = val, val
+
+	if val, exists := ann["iops-limit/read"]; exists {
+		if iops, err := strconv.Atoi(val); err == nil && iops > 0 {
+			readIops = iops
 		}
 	}
-	return
+
+	if val, exists := ann["iops-limit/write"]; exists {
+		if iops, err := strconv.Atoi(val); err == nil && iops > 0 {
+			writeIops = iops
+		}
+	}
+
+	if readIops == 0 {
+		readIops = defaultRead
+	}
+	if writeIops == 0 {
+		writeIops = defaultWrite
+	}
+
+	return readIops, writeIops
 }
 
 // copyMap 深拷贝map，防止引用问题
@@ -289,6 +337,12 @@ func copyMap(src map[string]string) map[string]string {
 
 // Close 关闭服务
 func (s *KubeDiskGuardService) Close() error {
+	// 停止智能限速监控
+	if s.smartLimit != nil {
+		s.smartLimit.Stop()
+	}
+
+	// 关闭运行时连接
 	if s.runtime != nil {
 		return s.runtime.Close()
 	}
@@ -297,22 +351,20 @@ func (s *KubeDiskGuardService) Close() error {
 
 // Run 运行服务
 func (s *KubeDiskGuardService) Run() error {
-	log.Println("Starting IOPS limit service...")
-
-	// 确保在服务结束时关闭运行时连接
-	defer func() {
-		if err := s.Close(); err != nil {
-			log.Printf("Error closing runtime connection: %v", err)
+	// 启动智能限速监控
+	if s.smartLimit != nil {
+		if err := s.smartLimit.Start(); err != nil {
+			log.Printf("Failed to start smart limit manager: %v", err)
 		}
-	}()
+	}
 
 	// 处理现有容器
 	if err := s.ProcessExistingContainers(); err != nil {
 		log.Printf("Failed to process existing containers: %v", err)
 	}
 
-	// 监听新容器事件
-	return s.WatchEvents()
+	// 监听Pod事件
+	return s.WatchPodEvents()
 }
 
 // getNodePods 获取本节点的所有Pod（优先使用kubelet API，fallback到API Server）
@@ -376,27 +428,42 @@ func NewKubeDiskGuardServiceWithKubeClient(config *config.Config, kc kubeclient.
 	return service, nil
 }
 
-// ParseBpsLimitFromAnnotations 解析注解中的带宽限制（字节/秒）
+// ParseBpsLimitFromAnnotations 从Pod注解中解析BPS限制
 func ParseBpsLimitFromAnnotations(ann map[string]string, defaultRead, defaultWrite int) (readBps, writeBps int) {
-	// 优先单独注解
-	readBps, writeBps = defaultRead, defaultWrite
-	if v, ok := ann["iops-limit/read-bps"]; ok {
-		if val, err := parseBpsValue(v); err == nil && val >= 0 {
-			readBps = val
+	if ann == nil {
+		return defaultRead, defaultWrite
+	}
+
+	// 检查是否有智能限速注解
+	if smartLimit, exists := ann["iops-limit/smart-limit"]; exists && smartLimit == "true" {
+		if autoBPS, exists := ann["iops-limit/auto-bps"]; exists {
+			if bps, err := strconv.Atoi(autoBPS); err == nil && bps > 0 {
+				return bps, bps // 智能限速时读写使用相同值
+			}
 		}
 	}
-	if v, ok := ann["iops-limit/write-bps"]; ok {
-		if val, err := parseBpsValue(v); err == nil && val >= 0 {
-			writeBps = val
+
+	// 原有的注解解析逻辑
+	if val, exists := ann["iops-limit/read-bps"]; exists {
+		if bps, err := parseBpsValue(val); err == nil && bps > 0 {
+			readBps = bps
 		}
 	}
-	// 通用bps注解，若存在，覆盖读写
-	if v, ok := ann["iops-limit/bps"]; ok {
-		if val, err := parseBpsValue(v); err == nil && val >= 0 {
-			readBps, writeBps = val, val
+
+	if val, exists := ann["iops-limit/write-bps"]; exists {
+		if bps, err := parseBpsValue(val); err == nil && bps > 0 {
+			writeBps = bps
 		}
 	}
-	return
+
+	if readBps == 0 {
+		readBps = defaultRead
+	}
+	if writeBps == 0 {
+		writeBps = defaultWrite
+	}
+
+	return readBps, writeBps
 }
 
 // parseBpsValue 支持纯数字（字节/秒），后续可扩展单位

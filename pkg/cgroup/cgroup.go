@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Manager cgroup管理器
@@ -293,4 +294,145 @@ func (m *Manager) ResetLimits(cgroupPath, majMin string) error {
 		log.Printf("Reset all limits at %s (v2)", majMin)
 	}
 	return nil
+}
+
+// IOStats IO统计信息
+type IOStats struct {
+	ContainerID  string
+	Timestamp    time.Time
+	ReadIOPS     int64
+	WriteIOPS    int64
+	ReadBPS      int64
+	WriteBPS     int64
+	ReadLatency  int64 // 平均读取延迟（微秒）
+	WriteLatency int64 // 平均写入延迟（微秒）
+}
+
+// GetIOStats 获取容器的IO统计信息
+func (m *Manager) GetIOStats(cgroupPath string) (*IOStats, error) {
+	if cgroupPath == "" {
+		return nil, fmt.Errorf("invalid cgroup path")
+	}
+
+	stats := &IOStats{
+		Timestamp: time.Now(),
+	}
+
+	if m.version == "v1" {
+		return m.getIOStatsV1(cgroupPath, stats)
+	} else {
+		return m.getIOStatsV2(cgroupPath, stats)
+	}
+}
+
+// getIOStatsV1 获取cgroup v1的IO统计
+func (m *Manager) getIOStatsV1(cgroupPath string, stats *IOStats) (*IOStats, error) {
+	// 读取blkio统计文件
+	readFile := filepath.Join(cgroupPath, "blkio.throttle.io_serviced")
+	writeFile := filepath.Join(cgroupPath, "blkio.throttle.io_service_bytes")
+
+	// 读取IOPS统计
+	if data, err := os.ReadFile(readFile); err == nil {
+		stats.ReadIOPS, stats.WriteIOPS = parseIOPSV1(string(data))
+	}
+
+	// 读取BPS统计
+	if data, err := os.ReadFile(writeFile); err == nil {
+		stats.ReadBPS, stats.WriteBPS = parseBPSV1(string(data))
+	}
+
+	return stats, nil
+}
+
+// getIOStatsV2 获取cgroup v2的IO统计
+func (m *Manager) getIOStatsV2(cgroupPath string, stats *IOStats) (*IOStats, error) {
+	// 读取io.stat文件
+	ioStatFile := filepath.Join(cgroupPath, "io.stat")
+
+	if data, err := os.ReadFile(ioStatFile); err == nil {
+		return parseIOStatsV2(string(data), stats), nil
+	}
+
+	return stats, nil
+}
+
+// parseIOPSV1 解析cgroup v1的IOPS统计
+func parseIOPSV1(data string) (readIOPS, writeIOPS int64) {
+	lines := strings.Split(strings.TrimSpace(data), "\n")
+
+	for _, line := range lines {
+		fields := strings.Fields(line)
+		if len(fields) >= 4 {
+			op := fields[1]
+			count, _ := strconv.ParseInt(fields[2], 10, 64)
+
+			if op == "Read" {
+				readIOPS += count
+			} else if op == "Write" {
+				writeIOPS += count
+			}
+		}
+	}
+
+	return readIOPS, writeIOPS
+}
+
+// parseBPSV1 解析cgroup v1的BPS统计
+func parseBPSV1(data string) (readBPS, writeBPS int64) {
+	lines := strings.Split(strings.TrimSpace(data), "\n")
+
+	for _, line := range lines {
+		fields := strings.Fields(line)
+		if len(fields) >= 4 {
+			op := fields[1]
+			bytes, _ := strconv.ParseInt(fields[2], 10, 64)
+
+			if op == "Read" {
+				readBPS += bytes
+			} else if op == "Write" {
+				writeBPS += bytes
+			}
+		}
+	}
+
+	return readBPS, writeBPS
+}
+
+// parseIOStatsV2 解析cgroup v2的IO统计
+func parseIOStatsV2(data string, stats *IOStats) *IOStats {
+	lines := strings.Split(strings.TrimSpace(data), "\n")
+
+	for _, line := range lines {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+
+		for i := 1; i < len(fields); i++ {
+			keyValue := strings.Split(fields[i], "=")
+			if len(keyValue) != 2 {
+				continue
+			}
+
+			key := keyValue[0]
+			value, _ := strconv.ParseInt(keyValue[1], 10, 64)
+
+			switch key {
+			case "rios":
+				stats.ReadIOPS += value
+			case "wios":
+				stats.WriteIOPS += value
+			case "rbytes":
+				stats.ReadBPS += value
+			case "wbytes":
+				stats.WriteBPS += value
+			case "rlat":
+				stats.ReadLatency = value
+			case "wlat":
+				stats.WriteLatency = value
+			}
+		}
+	}
+
+	return stats
 }

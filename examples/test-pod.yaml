@@ -1,0 +1,97 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: high-io-test
+  namespace: default
+  labels:
+    app: high-io-test
+spec:
+  containers:
+  - name: high-io-test
+    image: ubuntu:20.04
+    command: ["/bin/bash"]
+    args:
+    - -c
+    - |
+      # 安装fio工具
+      apt-get update && apt-get install -y fio
+      
+      # 创建测试文件
+      dd if=/dev/zero of=/tmp/testfile bs=1M count=1000
+      
+      echo "Starting high IO test..."
+      
+      # 运行高IO测试，模拟长时间高IO场景
+      while true; do
+        echo "Running fio test at $(date)"
+        # 随机读写测试，高IOPS
+        fio --name=high-iops --filename=/tmp/testfile --size=100M --time_based --runtime=60 --ramp_time=2 --ioengine=libaio --direct=1 --verify=0 --bs=4k --iodepth=32 --rw=randrw --rwmixread=50 --group_reporting --numjobs=4
+        
+        # 顺序读写测试，高BPS
+        fio --name=high-bps --filename=/tmp/testfile --size=100M --time_based --runtime=60 --ramp_time=2 --ioengine=libaio --direct=1 --verify=0 --bs=1M --iodepth=8 --rw=rw --group_reporting --numjobs=2
+        
+        sleep 10
+      done
+    resources:
+      requests:
+        memory: "256Mi"
+        cpu: "250m"
+      limits:
+        memory: "512Mi"
+        cpu: "500m"
+    volumeMounts:
+    - name: test-volume
+      mountPath: /tmp
+  volumes:
+  - name: test-volume
+    emptyDir: {}
+  restartPolicy: Never
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: normal-io-test
+  namespace: default
+  labels:
+    app: normal-io-test
+spec:
+  containers:
+  - name: normal-io-test
+    image: ubuntu:20.04
+    command: ["/bin/bash"]
+    args:
+    - -c
+    - |
+      # 安装fio工具
+      apt-get update && apt-get install -y fio
+      
+      # 创建测试文件
+      dd if=/dev/zero of=/tmp/testfile bs=1M count=100
+      
+      echo "Starting normal IO test..."
+      
+      # 运行正常IO测试
+      while true; do
+        echo "Running normal fio test at $(date)"
+        # 低IOPS测试
+        fio --name=normal-iops --filename=/tmp/testfile --size=10M --time_based --runtime=30 --ramp_time=2 --ioengine=libaio --direct=1 --verify=0 --bs=4k --iodepth=4 --rw=randrw --rwmixread=50 --group_reporting --numjobs=1
+        
+        # 低BPS测试
+        fio --name=normal-bps --filename=/tmp/testfile --size=10M --time_based --runtime=30 --ramp_time=2 --ioengine=libaio --direct=1 --verify=0 --bs=64k --iodepth=2 --rw=rw --group_reporting --numjobs=1
+        
+        sleep 30
+      done
+    resources:
+      requests:
+        memory: "128Mi"
+        cpu: "100m"
+      limits:
+        memory: "256Mi"
+        cpu: "200m"
+    volumeMounts:
+    - name: test-volume
+      mountPath: /tmp
+  volumes:
+  - name: test-volume
+    emptyDir: {}
+  restartPolicy: Never 
