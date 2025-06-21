@@ -42,6 +42,7 @@ type IKubeClient interface {
 	WatchNodePods() (watch.Interface, error)
 	GetPod(namespace, name string) (*corev1.Pod, error)
 	UpdatePod(pod *corev1.Pod) (*corev1.Pod, error)
+	WatchPods() (watch.Interface, error)
 }
 
 // 确保KubeClient实现IKubeClient
@@ -234,4 +235,13 @@ func (k *KubeClient) UpdatePod(pod *corev1.Pod) (*corev1.Pod, error) {
 		return nil, fmt.Errorf("failed to update pod: %v", err)
 	}
 	return pod, nil
+}
+
+// WatchPods 监听本节点所有Pod事件
+func (k *KubeClient) WatchPods() (watch.Interface, error) {
+	fieldSelector := fields.OneTermEqualSelector("spec.nodeName", k.NodeName).String()
+	return k.Clientset.CoreV1().Pods("").Watch(context.TODO(), metav1.ListOptions{
+		FieldSelector: fieldSelector,
+		Watch:         true,
+	})
 }

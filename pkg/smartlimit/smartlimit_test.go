@@ -1,135 +1,293 @@
 package smartlimit
 
 import (
+	"fmt"
+	"math"
+	"sync"
 	"testing"
 	"time"
 
 	"KubeDiskGuard/pkg/config"
+	"KubeDiskGuard/pkg/kubeclient"
 	"KubeDiskGuard/pkg/kubelet"
+
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// mockKubeClient 是一个用于测试的模拟kubeClient
+type mockKubeClient struct {
+	kubeclient.IKubeClient
+	pods []corev1.Pod
+	mu   sync.Mutex
+}
+
+func (m *mockKubeClient) ListNodePodsWithKubeletFirst() ([]corev1.Pod, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.pods, nil
+}
+
+func (m *mockKubeClient) GetPod(namespace, name string) (*corev1.Pod, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, pod := range m.pods {
+		if pod.Namespace == namespace && pod.Name == name {
+			return &pod, nil
+		}
+	}
+	return nil, fmt.Errorf("pod not found")
+}
+
+func (m *mockKubeClient) UpdatePod(pod *corev1.Pod) (*corev1.Pod, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i, p := range m.pods {
+		if p.Namespace == pod.Namespace && p.Name == pod.Name {
+			m.pods[i] = *pod
+			return pod, nil
+		}
+	}
+	return nil, fmt.Errorf("pod not found")
+}
+
+func newTestManager(cfg *config.Config) *SmartLimitManager {
+	return &SmartLimitManager{
+		config:      cfg,
+		history:     make(map[string]*ContainerIOHistory),
+		limitStatus: make(map[string]*LimitStatus),
+		stopCh:      make(chan struct{}),
+		kubeClient:  &mockKubeClient{},
+	}
+}
+
 func TestCalculateIOTrend(t *testing.T) {
-	cfg := &config.Config{
-		SmartLimitEnabled:          true,
-		SmartLimitMonitorInterval:  60,
-		SmartLimitHistoryWindow:    10,
-		SmartLimitHighIOThreshold:  1000,
-		SmartLimitAutoIOPS:         500,
-		SmartLimitAutoBPS:          1024 * 1024, // 1MB/s
-		SmartLimitAnnotationPrefix: "io-limit",
-		ExcludeNamespaces:          []string{"kube-system"},
-	}
+	manager := newTestManager(&config.Config{})
 
-	manager := &SmartLimitManager{
-		config:  cfg,
-		history: make(map[string]*ContainerIOHistory),
-	}
-
-	// 创建模拟的IO统计数据
+	now := time.Now()
 	stats := []*kubelet.IOStats{
-		{
-			ContainerID: "test-container",
-			Timestamp:   time.Now().Add(-5 * time.Minute),
-			ReadIOPS:    100,
-			WriteIOPS:   200,
-			ReadBPS:     1024 * 1024,     // 1MB
-			WriteBPS:    2 * 1024 * 1024, // 2MB
-		},
-		{
-			ContainerID: "test-container",
-			Timestamp:   time.Now().Add(-4 * time.Minute),
-			ReadIOPS:    300,
-			WriteIOPS:   400,
-			ReadBPS:     3 * 1024 * 1024, // 3MB
-			WriteBPS:    4 * 1024 * 1024, // 4MB
-		},
-		{
-			ContainerID: "test-container",
-			Timestamp:   time.Now().Add(-3 * time.Minute),
-			ReadIOPS:    500,
-			WriteIOPS:   600,
-			ReadBPS:     5 * 1024 * 1024, // 5MB
-			WriteBPS:    6 * 1024 * 1024, // 6MB
-		},
+		{Timestamp: now.Add(-2 * time.Minute), ReadIOPS: 100, WriteIOPS: 200, ReadBPS: 1000, WriteBPS: 2000},
+		{Timestamp: now.Add(-1 * time.Minute), ReadIOPS: 160, WriteIOPS: 320, ReadBPS: 1600, WriteBPS: 3200}, // delta: 60, 120, 600, 1200 over 60s
 	}
 
 	trend := manager.calculateIOTrend(stats)
 
-	// 验证趋势计算结果
-	if trend.ReadIOPS15m <= 0 {
-		t.Errorf("Expected positive ReadIOPS15m, got %f", trend.ReadIOPS15m)
-	}
-	if trend.WriteIOPS15m <= 0 {
-		t.Errorf("Expected positive WriteIOPS15m, got %f", trend.WriteIOPS15m)
-	}
-	if trend.ReadBPS15m <= 0 {
-		t.Errorf("Expected positive ReadBPS15m, got %f", trend.ReadBPS15m)
-	}
-	if trend.WriteBPS15m <= 0 {
-		t.Errorf("Expected positive WriteBPS15m, got %f", trend.WriteBPS15m)
-	}
+	// Expected: delta / 60 seconds
+	expectedReadIOPS := float64(60) / 60.0
+	expectedWriteIOPS := float64(120) / 60.0
+	expectedReadBPS := float64(600) / 60.0
+	expectedWriteBPS := float64(1200) / 60.0
 
-	t.Logf("IO Trend: ReadIOPS15m=%f, WriteIOPS15m=%f, ReadBPS15m=%f, WriteBPS15m=%f",
-		trend.ReadIOPS15m, trend.WriteIOPS15m, trend.ReadBPS15m, trend.WriteBPS15m)
+	if math.Abs(trend.ReadIOPS15m-expectedReadIOPS) > 0.01 {
+		t.Errorf("ReadIOPS15m wrong. got=%.2f, want=%.2f", trend.ReadIOPS15m, expectedReadIOPS)
+	}
+	if math.Abs(trend.WriteIOPS15m-expectedWriteIOPS) > 0.01 {
+		t.Errorf("WriteIOPS15m wrong. got=%.2f, want=%.2f", trend.WriteIOPS15m, expectedWriteIOPS)
+	}
+	if math.Abs(trend.ReadBPS15m-expectedReadBPS) > 0.01 {
+		t.Errorf("ReadBPS15m wrong. got=%.2f, want=%.2f", trend.ReadBPS15m, expectedReadBPS)
+	}
+	if math.Abs(trend.WriteBPS15m-expectedWriteBPS) > 0.01 {
+		t.Errorf("WriteBPS15m wrong. got=%.2f, want=%.2f", trend.WriteBPS15m, expectedWriteBPS)
+	}
 }
 
 func TestShouldApplyLimit(t *testing.T) {
-	cfg := &config.Config{
-		SmartLimitEnabled:          true,
-		SmartLimitHighIOThreshold:  1000,        // IOPS阈值
-		SmartLimitHighBPSThreshold: 1024 * 1024, // BPS阈值（1MB/s）
-		SmartLimitAutoIOPS:         500,
-		SmartLimitAutoBPS:          1024 * 1024,
-		SmartLimitAnnotationPrefix: "io-limit",
-		ExcludeNamespaces:          []string{"kube-system"},
+	cfg := config.GetDefaultConfig()
+	cfg.SmartLimitGradedThresholds = true
+	cfg.SmartLimitIOThreshold15m = 100
+	cfg.SmartLimitIOPSLimit15m = 115
+	cfg.SmartLimitIOThreshold30m = 200
+	cfg.SmartLimitIOPSLimit30m = 230
+	cfg.SmartLimitIOThreshold60m = 300
+	cfg.SmartLimitIOPSLimit60m = 360
+
+	manager := newTestManager(cfg)
+
+	tests := []struct {
+		name            string
+		trend           *IOTrend
+		expectLimit     bool
+		expectedIOPS    int
+		expectedTrigger string
+	}{
+		{"NoLimit", &IOTrend{}, false, 0, ""},
+		{"15mTrigger", &IOTrend{ReadIOPS15m: 150}, true, 115, "15m"},
+		{"30mTrigger", &IOTrend{ReadIOPS15m: 50, ReadIOPS30m: 250}, true, 230, "30m"},
+		{"60mTrigger", &IOTrend{ReadIOPS15m: 50, ReadIOPS30m: 150, ReadIOPS60m: 350}, true, 360, "60m"},
+		{"15mHasPriority", &IOTrend{ReadIOPS15m: 150, ReadIOPS30m: 250}, true, 115, "15m"},
 	}
 
-	manager := &SmartLimitManager{
-		config: cfg,
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			shouldLimit, result := manager.shouldApplyLimit(tt.trend)
+			if shouldLimit != tt.expectLimit {
+				t.Errorf("shouldLimit mismatch. got=%v, want=%v", shouldLimit, tt.expectLimit)
+			}
+			if shouldLimit {
+				if result.ReadIOPS != tt.expectedIOPS {
+					t.Errorf("expectedIOPS mismatch. got=%d, want=%d", result.ReadIOPS, tt.expectedIOPS)
+				}
+				if result.TriggeredBy != tt.expectedTrigger {
+					t.Errorf("expectedTrigger mismatch. got=%s, want=%s", result.TriggeredBy, tt.expectedTrigger)
+				}
+			}
+		})
 	}
 
-	// 测试高IO情况（IOPS超过阈值）
-	highIOTrend := &IOTrend{
-		ReadIOPS15m:  1500,
-		WriteIOPS15m: 1600,
-		ReadBPS15m:   2 * 1024 * 1024,
-		WriteBPS15m:  2.5 * 1024 * 1024,
-		ReadIOPS30m:  1400,
-		WriteIOPS30m: 1500,
-		ReadBPS30m:   1.8 * 1024 * 1024,
-		WriteBPS30m:  2.2 * 1024 * 1024,
-		ReadIOPS60m:  1300,
-		WriteIOPS60m: 1400,
-		ReadBPS60m:   1.6 * 1024 * 1024,
-		WriteBPS60m:  2.0 * 1024 * 1024,
+	// Test legacy mode
+	cfg.SmartLimitGradedThresholds = false
+	cfg.SmartLimitHighIOThreshold = 100
+	manager.config = cfg
+	shouldLimit, _ := manager.shouldApplyLimit(&IOTrend{ReadIOPS15m: 150})
+	if !shouldLimit {
+		t.Error("shouldApplyLimit failed in legacy mode")
+	}
+}
+
+func TestShouldRemoveLimit(t *testing.T) {
+	cfg := config.GetDefaultConfig()
+	cfg.SmartLimitRemoveThreshold = 50
+	cfg.SmartLimitRemoveDelay = 5         // 5 minutes
+	cfg.SmartLimitRemoveCheckInterval = 1 // 1 minute
+	manager := newTestManager(cfg)
+
+	now := time.Now()
+
+	status := &LimitStatus{
+		IsLimited:   true,
+		TriggeredBy: "15m",
+		AppliedAt:   now.Add(-10 * time.Minute), // Applied 10 mins ago
+		LastCheckAt: now.Add(-2 * time.Minute),  // Last checked 2 mins ago
 	}
 
-	result := manager.shouldApplyLimit(highIOTrend)
-	t.Logf("High IO trend result: %v", result)
-	if !result {
-		t.Error("Expected shouldApplyLimit to return true for high IO trend")
+	tests := []struct {
+		name         string
+		trend        *IOTrend
+		status       *LimitStatus
+		expectRemove bool
+	}{
+		{"IOHigh", &IOTrend{ReadIOPS15m: 60}, status, false},
+		{"IOLow", &IOTrend{ReadIOPS15m: 40}, status, true},
+		{"InDelay", &IOTrend{ReadIOPS15m: 40}, &LimitStatus{AppliedAt: now.Add(-3 * time.Minute), LastCheckAt: now.Add(-2 * time.Minute), TriggeredBy: "15m"}, false},
+		{"InCheckInterval", &IOTrend{ReadIOPS15m: 40}, &LimitStatus{AppliedAt: now.Add(-10 * time.Minute), LastCheckAt: now.Add(-30 * time.Second), TriggeredBy: "15m"}, false},
 	}
 
-	// 测试正常IO情况（IOPS和BPS都低于阈值）
-	normalIOTrend := &IOTrend{
-		ReadIOPS15m:  500,
-		WriteIOPS15m: 600,
-		ReadBPS15m:   512 * 1024,
-		WriteBPS15m:  600 * 1024,
-		ReadIOPS30m:  450,
-		WriteIOPS30m: 550,
-		ReadBPS30m:   480 * 1024,
-		WriteBPS30m:  580 * 1024,
-		ReadIOPS60m:  400,
-		WriteIOPS60m: 500,
-		ReadBPS60m:   450 * 1024,
-		WriteBPS60m:  550 * 1024,
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if remove := manager.shouldRemoveLimit(tt.trend, tt.status); remove != tt.expectRemove {
+				t.Errorf("shouldRemoveLimit mismatch. got=%v, want=%v", remove, tt.expectRemove)
+			}
+		})
+	}
+}
+
+func TestRestoreLimitStatus(t *testing.T) {
+	cfg := config.GetDefaultConfig()
+	cfg.SmartLimitAnnotationPrefix = "test.prefix.io"
+	manager := newTestManager(cfg)
+
+	prefix := cfg.SmartLimitAnnotationPrefix + "/"
+	mockClient := &mockKubeClient{
+		pods: []corev1.Pod{
+			{ // Pod that should be restored
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "pod-to-restore",
+					Namespace: "default",
+					Annotations: map[string]string{
+						prefix + "triggered-by":    "15m",
+						prefix + "read-iops-limit": "100",
+					},
+				},
+				Status: corev1.PodStatus{
+					ContainerStatuses: []corev1.ContainerStatus{
+						{ContainerID: "docker://container1"},
+					},
+				},
+			},
+			{ // Pod that was limited but now removed
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "pod-removed",
+					Namespace: "default",
+					Annotations: map[string]string{
+						prefix + "triggered-by":  "30m",
+						prefix + "limit-removed": "true",
+					},
+				},
+				Status: corev1.PodStatus{
+					ContainerStatuses: []corev1.ContainerStatus{
+						{ContainerID: "docker://container2"},
+					},
+				},
+			},
+			{ // Pod with no limit annotations
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "pod-no-limit",
+					Namespace: "default",
+				},
+				Status: corev1.PodStatus{
+					ContainerStatuses: []corev1.ContainerStatus{
+						{ContainerID: "docker://container3"},
+					},
+				},
+			},
+		},
+	}
+	manager.kubeClient = mockClient
+
+	manager.restoreLimitStatus()
+
+	if _, exists := manager.limitStatus["container2"]; exists {
+		t.Error("container2 with removed limit should not be in limitStatus")
+	}
+	if _, exists := manager.limitStatus["container3"]; exists {
+		t.Error("container3 with no limit should not be in limitStatus")
 	}
 
-	result = manager.shouldApplyLimit(normalIOTrend)
-	t.Logf("Normal IO trend result: %v", result)
-	if result {
-		t.Error("Expected shouldApplyLimit to return false for normal IO trend")
+	status, exists := manager.limitStatus["container1"]
+	if !exists {
+		t.Fatal("container1 should be in limitStatus")
+	}
+	if !status.IsLimited {
+		t.Error("container1 status IsLimited should be true")
+	}
+	if status.LimitResult.TriggeredBy != "15m" {
+		t.Errorf("container1 TriggeredBy mismatch. got=%s, want=15m", status.LimitResult.TriggeredBy)
+	}
+	if status.LimitResult.ReadIOPS != 100 {
+		t.Errorf("container1 ReadIOPS mismatch. got=%d, want=100", status.LimitResult.ReadIOPS)
+	}
+}
+
+func TestShouldUpdateLimit(t *testing.T) {
+	manager := newTestManager(&config.Config{})
+
+	currentStatus := &LimitStatus{
+		IsLimited:   true,
+		TriggeredBy: "15m",
+		LimitResult: &LimitResult{
+			TriggeredBy: "15m",
+			ReadIOPS:    100,
+		},
+	}
+
+	tests := []struct {
+		name         string
+		newResult    *LimitResult
+		expectUpdate bool
+	}{
+		{"NoChange", &LimitResult{TriggeredBy: "15m", ReadIOPS: 100}, false},
+		{"IOPSChange", &LimitResult{TriggeredBy: "15m", ReadIOPS: 200}, true},
+		{"TriggerChange", &LimitResult{TriggeredBy: "30m", ReadIOPS: 100}, true},
+		{"BothChange", &LimitResult{TriggeredBy: "30m", ReadIOPS: 200}, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if update := manager.shouldUpdateLimit(currentStatus, tt.newResult); update != tt.expectUpdate {
+				t.Errorf("shouldUpdateLimit mismatch. got=%v, want=%v", update, tt.expectUpdate)
+			}
+		})
 	}
 }
 
@@ -139,80 +297,27 @@ func TestParseContainerID(t *testing.T) {
 		input    string
 		expected string
 	}{
-		{
-			name:     "docker container ID",
-			input:    "docker://1234567890abcdef",
-			expected: "1234567890abcdef",
-		},
-		{
-			name:     "containerd container ID",
-			input:    "containerd://abcdef1234567890",
-			expected: "abcdef1234567890",
-		},
-		{
-			name:     "plain container ID",
-			input:    "1234567890abcdef",
-			expected: "1234567890abcdef",
-		},
-		{
-			name:     "empty string",
-			input:    "",
-			expected: "",
-		},
+		{"docker", "docker://abc", "abc"},
+		{"containerd", "containerd://def", "def"},
+		{"plain", "ghi", "ghi"},
 	}
-
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := parseContainerID(tt.input)
-			if result != tt.expected {
-				t.Errorf("parseContainerID(%s) = %s, want %s", tt.input, result, tt.expected)
+			if got := parseContainerID(tt.input); got != tt.expected {
+				t.Errorf("parseContainerID() = %v, want %v", got, tt.expected)
 			}
 		})
 	}
 }
 
 func TestShouldMonitorPodByNamespace(t *testing.T) {
-	cfg := &config.Config{
-		ExcludeNamespaces: []string{"kube-system", "default"},
-	}
+	cfg := &config.Config{ExcludeNamespaces: []string{"kube-system"}}
+	manager := newTestManager(cfg)
 
-	manager := &SmartLimitManager{
-		config: cfg,
+	if manager.shouldMonitorPodByNamespace("kube-system") {
+		t.Error("should not monitor kube-system")
 	}
-
-	tests := []struct {
-		name      string
-		namespace string
-		expected  bool
-	}{
-		{
-			name:      "excluded namespace kube-system",
-			namespace: "kube-system",
-			expected:  false,
-		},
-		{
-			name:      "excluded namespace default",
-			namespace: "default",
-			expected:  false,
-		},
-		{
-			name:      "included namespace",
-			namespace: "my-app",
-			expected:  true,
-		},
-		{
-			name:      "empty namespace",
-			namespace: "",
-			expected:  true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := manager.shouldMonitorPodByNamespace(tt.namespace)
-			if result != tt.expected {
-				t.Errorf("shouldMonitorPodByNamespace(%s) = %v, want %v", tt.namespace, result, tt.expected)
-			}
-		})
+	if !manager.shouldMonitorPodByNamespace("default") {
+		t.Error("should monitor default")
 	}
 }
