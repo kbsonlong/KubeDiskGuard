@@ -13,8 +13,19 @@ import (
 	"time"
 
 	"KubeDiskGuard/pkg/cadvisor"
-	"KubeDiskGuard/pkg/cgroup"
 )
+
+// IOStats IO统计信息
+type IOStats struct {
+	ContainerID  string
+	Timestamp    time.Time
+	ReadIOPS     int64
+	WriteIOPS    int64
+	ReadBPS      int64
+	WriteBPS     int64
+	ReadLatency  int64 // 平均读取延迟（微秒）
+	WriteLatency int64 // 平均写入延迟（微秒）
+}
 
 // KubeletClient kubelet API客户端
 type KubeletClient struct {
@@ -340,10 +351,10 @@ func extractContainerID(metricName string) string {
 }
 
 // ConvertToIOStats 将kubelet API数据转换为IOStats
-func (k *KubeletClient) ConvertToIOStats(containerStats []ContainerStats, containerID string) *cgroup.IOStats {
+func (k *KubeletClient) ConvertToIOStats(containerStats []ContainerStats, containerID string) *IOStats {
 	for _, stat := range containerStats {
 		if stat.Name == containerID && stat.DiskIO != nil {
-			return &cgroup.IOStats{
+			return &IOStats{
 				ContainerID: containerID,
 				Timestamp:   stat.Timestamp,
 				ReadIOPS:    int64(stat.DiskIO.ReadIOPS),
@@ -357,7 +368,7 @@ func (k *KubeletClient) ConvertToIOStats(containerStats []ContainerStats, contai
 }
 
 // ConvertCadvisorToIOStats 将cAdvisor指标转换为IOStats（使用计算器）
-func (k *KubeletClient) ConvertCadvisorToIOStats(metrics *CadvisorMetrics, containerID string) *cgroup.IOStats {
+func (k *KubeletClient) ConvertCadvisorToIOStats(metrics *CadvisorMetrics, containerID string) *IOStats {
 	now := time.Now()
 
 	// 获取累积值
@@ -379,7 +390,7 @@ func (k *KubeletClient) ConvertCadvisorToIOStats(metrics *CadvisorMetrics, conta
 	rate, err := k.calculator.CalculateAverageIORate(containerID, windows)
 	if err != nil {
 		// 如果计算失败，返回累积值（不推荐，但作为回退）
-		return &cgroup.IOStats{
+		return &IOStats{
 			ContainerID: containerID,
 			Timestamp:   now,
 			ReadIOPS:    int64(readIOPS),
@@ -389,7 +400,7 @@ func (k *KubeletClient) ConvertCadvisorToIOStats(metrics *CadvisorMetrics, conta
 		}
 	}
 
-	return &cgroup.IOStats{
+	return &IOStats{
 		ContainerID: containerID,
 		Timestamp:   rate.Timestamp,
 		ReadIOPS:    int64(rate.ReadIOPS),

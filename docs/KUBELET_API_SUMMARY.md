@@ -98,10 +98,10 @@ go run cmd/test-kubelet-api/main.go --host=localhost --port=10250 --skip-verify=
 
 ```bash
 # 查看服务日志
-kubectl logs -n kube-system -l app=iops-limit-service | grep -i "kubelet"
+kubectl logs -n kube-system -l app=io-limit-service | grep -i "kubelet"
 
 # 检查是否使用 kubelet API
-kubectl logs -n kube-system -l app=iops-limit-service | grep -i "kubelet client initialized"
+kubectl logs -n kube-system -l app=io-limit-service | grep -i "kubelet client initialized"
 ```
 
 ## 数据源对比

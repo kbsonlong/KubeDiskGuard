@@ -1,113 +1,81 @@
 package smartlimit
 
 import (
-	"fmt"
 	"log"
+	"strconv"
 	"sync"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
+
 	"KubeDiskGuard/pkg/cgroup"
+	"KubeDiskGuard/pkg/config"
 	"KubeDiskGuard/pkg/kubeclient"
 	"KubeDiskGuard/pkg/kubelet"
-
-	corev1 "k8s.io/api/core/v1"
 )
 
-// SmartLimitConfig 智能限速配置
-type SmartLimitConfig struct {
-	Enabled           bool          `json:"enabled"`
-	MonitorInterval   time.Duration `json:"monitor_interval"`   // 监控间隔
-	HistoryWindow     time.Duration `json:"history_window"`     // 历史数据窗口
-	HighIOThreshold   float64       `json:"high_io_threshold"`  // 高IO阈值（百分比）
-	HighBPSThreshold  float64       `json:"high_bps_threshold"` // 高BPS阈值（字节/秒）
-	AutoLimitIOPS     int           `json:"auto_limit_iops"`    // 自动限速的IOPS值
-	AutoLimitBPS      int           `json:"auto_limit_bps"`     // 自动限速的BPS值
-	AnnotationPrefix  string        `json:"annotation_prefix"`  // 注解前缀
-	ExcludeNamespaces []string      `json:"exclude_namespaces"` // 排除的命名空间
-
-	// kubelet API配置
-	UseKubeletAPI     bool   `json:"use_kubelet_api"`     // 是否使用kubelet API
-	KubeletHost       string `json:"kubelet_host"`        // kubelet主机地址
-	KubeletPort       string `json:"kubelet_port"`        // kubelet端口
-	KubeletTokenPath  string `json:"kubelet_token_path"`  // kubelet token路径
-	KubeletCAPath     string `json:"kubelet_ca_path"`     // kubelet CA证书路径
-	KubeletSkipVerify bool   `json:"kubelet_skip_verify"` // 是否跳过证书验证
-}
-
-// ContainerIOHistory 容器IO历史数据
+// ContainerIOHistory 容器IO历史记录
 type ContainerIOHistory struct {
 	ContainerID string
 	PodName     string
 	Namespace   string
-	Stats       []*cgroup.IOStats
+	Stats       []*kubelet.IOStats
 	LastUpdate  time.Time
 	mu          sync.RWMutex
 }
 
 // SmartLimitManager 智能限速管理器
 type SmartLimitManager struct {
-	config        *SmartLimitConfig
-	cgroupMgr     *cgroup.Manager
-	kubeClient    kubeclient.IKubeClient
+	config        *config.Config
+	kubeClient    *kubeclient.KubeClient
 	kubeletClient *kubelet.KubeletClient
+	cgroupMgr     *cgroup.Manager
 	history       map[string]*ContainerIOHistory
 	mu            sync.RWMutex
 	stopCh        chan struct{}
 }
 
 // NewSmartLimitManager 创建智能限速管理器
-func NewSmartLimitManager(config *SmartLimitConfig, cgroupMgr *cgroup.Manager, kubeClient kubeclient.IKubeClient) *SmartLimitManager {
-	manager := &SmartLimitManager{
-		config:     config,
-		cgroupMgr:  cgroupMgr,
-		kubeClient: kubeClient,
-		history:    make(map[string]*ContainerIOHistory),
-		stopCh:     make(chan struct{}),
+func NewSmartLimitManager(config *config.Config, kubeClient *kubeclient.KubeClient, kubeletClient *kubelet.KubeletClient, cgroupMgr *cgroup.Manager) *SmartLimitManager {
+	return &SmartLimitManager{
+		config:        config,
+		kubeClient:    kubeClient,
+		kubeletClient: kubeletClient,
+		cgroupMgr:     cgroupMgr,
+		history:       make(map[string]*ContainerIOHistory),
+		stopCh:        make(chan struct{}),
 	}
-
-	// 如果启用kubelet API，则创建kubelet客户端
-	if config.UseKubeletAPI && config.KubeletHost != "" && config.KubeletPort != "" {
-		kubeletClient, err := kubelet.NewKubeletClient(
-			config.KubeletHost,
-			config.KubeletPort,
-			config.KubeletTokenPath,
-			config.KubeletCAPath,
-			config.KubeletSkipVerify,
-		)
-		if err != nil {
-			log.Printf("Failed to create kubelet client: %v", err)
-		} else {
-			manager.kubeletClient = kubeletClient
-			log.Printf("Kubelet client initialized for host: %s:%s", config.KubeletHost, config.KubeletPort)
-		}
-	}
-
-	return manager
 }
 
-// Start 启动智能限速监控
-func (m *SmartLimitManager) Start() error {
-	if !m.config.Enabled {
+// Start 启动智能限速管理器
+func (m *SmartLimitManager) Start() {
+	if !m.config.SmartLimitEnabled {
 		log.Println("Smart limit is disabled")
-		return nil
+		return
 	}
 
-	log.Printf("Starting smart limit monitoring with interval: %v", m.config.MonitorInterval)
+	log.Println("Starting smart limit manager...")
 
+	// 启动监控循环
 	go m.monitorLoop()
+
+	// 启动清理循环
 	go m.cleanupLoop()
 
-	return nil
+	log.Println("Smart limit manager started")
 }
 
-// Stop 停止智能限速监控
+// Stop 停止智能限速管理器
 func (m *SmartLimitManager) Stop() {
+	log.Println("Stopping smart limit manager...")
 	close(m.stopCh)
+	log.Println("Smart limit manager stopped")
 }
 
 // monitorLoop 监控循环
 func (m *SmartLimitManager) monitorLoop() {
-	ticker := time.NewTicker(m.config.MonitorInterval)
+	interval := time.Duration(m.config.SmartLimitMonitorInterval) * time.Second
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	for {
@@ -138,14 +106,13 @@ func (m *SmartLimitManager) cleanupLoop() {
 
 // collectIOStats 收集IO统计信息
 func (m *SmartLimitManager) collectIOStats() {
-	// 优先使用kubelet API
+	// 使用kubelet API获取IO数据
 	if m.kubeletClient != nil {
 		m.collectIOStatsFromKubelet()
 		return
 	}
 
-	// 回退到cgroup方式
-	m.collectIOStatsFromCgroup()
+	log.Println("Kubelet client not available, skipping IO stats collection")
 }
 
 // collectIOStatsFromKubelet 从kubelet API收集IO统计信息
@@ -153,8 +120,7 @@ func (m *SmartLimitManager) collectIOStatsFromKubelet() {
 	// 尝试获取节点摘要
 	summary, err := m.kubeletClient.GetNodeSummary()
 	if err != nil {
-		log.Printf("Failed to get node summary from kubelet: %v, falling back to cgroup", err)
-		m.collectIOStatsFromCgroup()
+		log.Printf("Failed to get node summary from kubelet: %v", err)
 		return
 	}
 
@@ -174,7 +140,7 @@ func (m *SmartLimitManager) collectIOStatsFromKubelet() {
 			}
 
 			// 转换统计信息
-			stats := &cgroup.IOStats{
+			stats := &kubelet.IOStats{
 				ContainerID: containerStats.Name,
 				Timestamp:   containerStats.Timestamp,
 				ReadIOPS:    int64(containerStats.DiskIO.ReadIOPS),
@@ -235,45 +201,8 @@ func (m *SmartLimitManager) collectIOStatsFromCadvisor() {
 	}
 }
 
-// collectIOStatsFromCgroup 从cgroup收集IO统计信息（原有方法）
-func (m *SmartLimitManager) collectIOStatsFromCgroup() {
-	pods, err := m.kubeClient.ListNodePodsWithKubeletFirst()
-	if err != nil {
-		log.Printf("Failed to get node pods: %v", err)
-		return
-	}
-
-	for _, pod := range pods {
-		if !m.shouldMonitorPod(pod) {
-			continue
-		}
-
-		for _, container := range pod.Status.ContainerStatuses {
-			if container.ContainerID == "" {
-				continue
-			}
-
-			containerID := parseContainerID(container.ContainerID)
-			cgroupPath := m.cgroupMgr.FindCgroupPath(containerID)
-
-			if cgroupPath == "" {
-				continue
-			}
-
-			stats, err := m.cgroupMgr.GetIOStats(cgroupPath)
-			if err != nil {
-				log.Printf("Failed to get IO stats for container %s: %v", containerID, err)
-				continue
-			}
-
-			stats.ContainerID = containerID
-			m.addIOStats(containerID, pod.Name, pod.Namespace, stats)
-		}
-	}
-}
-
 // addIOStats 添加IO统计信息到历史记录
-func (m *SmartLimitManager) addIOStats(containerID, podName, namespace string, stats *cgroup.IOStats) {
+func (m *SmartLimitManager) addIOStats(containerID, podName, namespace string, stats *kubelet.IOStats) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -283,7 +212,7 @@ func (m *SmartLimitManager) addIOStats(containerID, podName, namespace string, s
 			ContainerID: containerID,
 			PodName:     podName,
 			Namespace:   namespace,
-			Stats:       make([]*cgroup.IOStats, 0),
+			Stats:       make([]*kubelet.IOStats, 0),
 		}
 		m.history[containerID] = history
 	}
@@ -300,7 +229,7 @@ func (m *SmartLimitManager) addIOStats(containerID, podName, namespace string, s
 
 // cleanupContainerHistory 清理容器的历史数据
 func (m *SmartLimitManager) cleanupContainerHistory(history *ContainerIOHistory) {
-	cutoff := time.Now().Add(-m.config.HistoryWindow)
+	cutoff := time.Now().Add(-time.Duration(m.config.SmartLimitHistoryWindow) * time.Minute)
 
 	// 找到第一个未过期的数据点
 	validIndex := 0
@@ -322,7 +251,7 @@ func (m *SmartLimitManager) cleanupHistory() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	cutoff := time.Now().Add(-m.config.HistoryWindow)
+	cutoff := time.Now().Add(-time.Duration(m.config.SmartLimitHistoryWindow) * time.Minute)
 
 	for containerID, history := range m.history {
 		history.mu.RLock()
@@ -360,7 +289,7 @@ func (m *SmartLimitManager) analyzeContainer(containerID string) {
 	}
 
 	history.mu.RLock()
-	stats := make([]*cgroup.IOStats, len(history.Stats))
+	stats := make([]*kubelet.IOStats, len(history.Stats))
 	copy(stats, history.Stats)
 	history.mu.RUnlock()
 
@@ -394,7 +323,7 @@ type IOTrend struct {
 }
 
 // calculateIOTrend 计算IO趋势
-func (m *SmartLimitManager) calculateIOTrend(stats []*cgroup.IOStats) *IOTrend {
+func (m *SmartLimitManager) calculateIOTrend(stats []*kubelet.IOStats) *IOTrend {
 	trend := &IOTrend{}
 
 	now := time.Now()
@@ -449,19 +378,31 @@ func (m *SmartLimitManager) calculateIOTrend(stats []*cgroup.IOStats) *IOTrend {
 
 // shouldApplyLimit 判断是否需要应用限速
 func (m *SmartLimitManager) shouldApplyLimit(trend *IOTrend) bool {
-	// 检查15分钟、30分钟、60分钟的IO是否都超过阈值
-	ioThreshold := m.config.HighIOThreshold
-	bpsThreshold := m.config.HighBPSThreshold
+	// 检查15分钟、30分钟、60分钟的IO趋势
+	intervals := []struct {
+		readIOPS  float64
+		writeIOPS float64
+		readBPS   float64
+		writeBPS  float64
+	}{
+		{trend.ReadIOPS15m, trend.WriteIOPS15m, trend.ReadBPS15m, trend.WriteBPS15m},
+		{trend.ReadIOPS30m, trend.WriteIOPS30m, trend.ReadBPS30m, trend.WriteBPS30m},
+		{trend.ReadIOPS60m, trend.WriteIOPS60m, trend.ReadBPS60m, trend.WriteBPS60m},
+	}
 
-	// 计算平均IOPS和BPS
-	avgReadIOPS := (trend.ReadIOPS15m + trend.ReadIOPS30m + trend.ReadIOPS60m) / 3
-	avgWriteIOPS := (trend.WriteIOPS15m + trend.WriteIOPS30m + trend.WriteIOPS60m) / 3
-	avgReadBPS := (trend.ReadBPS15m + trend.ReadBPS30m + trend.ReadBPS60m) / 3
-	avgWriteBPS := (trend.WriteBPS15m + trend.WriteBPS30m + trend.WriteBPS60m) / 3
+	for _, interval := range intervals {
+		// 检查IOPS阈值
+		if interval.readIOPS > m.config.SmartLimitHighIOThreshold || interval.writeIOPS > m.config.SmartLimitHighIOThreshold {
+			return true
+		}
 
-	// 如果平均IOPS或BPS超过阈值，则应用限速
-	return avgReadIOPS > ioThreshold || avgWriteIOPS > ioThreshold ||
-		avgReadBPS > bpsThreshold || avgWriteBPS > bpsThreshold
+		// 检查BPS阈值
+		if interval.readBPS > m.config.SmartLimitHighBPSThreshold || interval.writeBPS > m.config.SmartLimitHighBPSThreshold {
+			return true
+		}
+	}
+
+	return false
 }
 
 // applySmartLimit 应用智能限速
@@ -473,99 +414,54 @@ func (m *SmartLimitManager) applySmartLimit(podName, namespace string, trend *IO
 		return
 	}
 
-	// 检查是否已经有智能限速注解
-	if m.hasSmartLimitAnnotation(pod.Annotations) {
-		log.Printf("Pod %s/%s already has smart limit annotation", namespace, podName)
-		return
-	}
-
-	// 计算限速值
-	limitIOPS := m.calculateLimitIOPS(trend)
-	limitBPS := m.calculateLimitBPS(trend)
-
-	// 添加注解
+	// 构建注解
 	annotations := make(map[string]string)
 	for k, v := range pod.Annotations {
 		annotations[k] = v
 	}
 
-	annotations[m.config.AnnotationPrefix+"/smart-limit"] = "true"
-	annotations[m.config.AnnotationPrefix+"/auto-iops"] = fmt.Sprintf("%d", limitIOPS)
-	annotations[m.config.AnnotationPrefix+"/auto-bps"] = fmt.Sprintf("%d", limitBPS)
-	annotations[m.config.AnnotationPrefix+"/limit-reason"] = "high-io-detected"
+	if m.config.SmartLimitAutoIOPS > 0 {
+		annotations[m.config.SmartLimitAnnotationPrefix+"/io-limit"] = strconv.Itoa(m.config.SmartLimitAutoIOPS)
+	}
 
-	// 更新Pod
+	if m.config.SmartLimitAutoBPS > 0 {
+		annotations[m.config.SmartLimitAnnotationPrefix+"/bps-limit"] = strconv.Itoa(m.config.SmartLimitAutoBPS)
+	}
+
+	// 添加趋势信息
+	annotations[m.config.SmartLimitAnnotationPrefix+"/trend-read-iops-15m"] = strconv.FormatFloat(trend.ReadIOPS15m, 'f', 2, 64)
+	annotations[m.config.SmartLimitAnnotationPrefix+"/trend-write-iops-15m"] = strconv.FormatFloat(trend.WriteIOPS15m, 'f', 2, 64)
+	annotations[m.config.SmartLimitAnnotationPrefix+"/trend-read-bps-15m"] = strconv.FormatFloat(trend.ReadBPS15m, 'f', 2, 64)
+	annotations[m.config.SmartLimitAnnotationPrefix+"/trend-write-bps-15m"] = strconv.FormatFloat(trend.WriteBPS15m, 'f', 2, 64)
+
+	// 更新Pod注解
 	pod.Annotations = annotations
 	_, err = m.kubeClient.UpdatePod(pod)
 	if err != nil {
-		log.Printf("Failed to update pod %s/%s with smart limit: %v", namespace, podName, err)
+		log.Printf("Failed to update pod annotations for %s/%s: %v", namespace, podName, err)
 		return
 	}
 
-	log.Printf("Applied smart limit to pod %s/%s: IOPS=%d, BPS=%d", namespace, podName, limitIOPS, limitBPS)
-}
-
-// hasSmartLimitAnnotation 检查是否已有智能限速注解
-func (m *SmartLimitManager) hasSmartLimitAnnotation(annotations map[string]string) bool {
-	_, exists := annotations[m.config.AnnotationPrefix+"/smart-limit"]
-	return exists
-}
-
-// calculateLimitIOPS 计算IOPS限速值
-func (m *SmartLimitManager) calculateLimitIOPS(trend *IOTrend) int {
-	// 基于当前IOPS计算限速值，设置为当前平均值的80%
-	avgReadIOPS := (trend.ReadIOPS15m + trend.ReadIOPS30m + trend.ReadIOPS60m) / 3
-	avgWriteIOPS := (trend.WriteIOPS15m + trend.WriteIOPS30m + trend.WriteIOPS60m) / 3
-
-	limitIOPS := int((avgReadIOPS + avgWriteIOPS) * 0.8)
-
-	// 确保不低于最小限速值
-	if limitIOPS < m.config.AutoLimitIOPS {
-		limitIOPS = m.config.AutoLimitIOPS
-	}
-
-	return limitIOPS
-}
-
-// calculateLimitBPS 计算BPS限速值
-func (m *SmartLimitManager) calculateLimitBPS(trend *IOTrend) int {
-	// 基于当前BPS计算限速值，设置为当前平均值的80%
-	avgReadBPS := (trend.ReadBPS15m + trend.ReadBPS30m + trend.ReadBPS60m) / 3
-	avgWriteBPS := (trend.WriteBPS15m + trend.WriteBPS30m + trend.WriteBPS60m) / 3
-
-	limitBPS := int((avgReadBPS + avgWriteBPS) * 0.8)
-
-	// 确保不低于最小限速值
-	if limitBPS < m.config.AutoLimitBPS {
-		limitBPS = m.config.AutoLimitBPS
-	}
-
-	return limitBPS
+	log.Printf("Applied smart limit to pod %s/%s: IOPS=%d, BPS=%d", namespace, podName, m.config.SmartLimitAutoIOPS, m.config.SmartLimitAutoBPS)
 }
 
 // shouldMonitorPod 判断是否应该监控Pod
 func (m *SmartLimitManager) shouldMonitorPod(pod corev1.Pod) bool {
-	// 检查Pod状态
-	if pod.Status.Phase != corev1.PodRunning {
+	// 检查命名空间
+	if !m.shouldMonitorPodByNamespace(pod.Namespace) {
 		return false
 	}
 
-	// 检查命名空间
-	for _, excludeNS := range m.config.ExcludeNamespaces {
-		if pod.Namespace == excludeNS {
-			return false
-		}
-	}
-
-	// 检查是否已有智能限速注解
-	if m.hasSmartLimitAnnotation(pod.Annotations) {
+	// 检查标签选择器
+	if m.config.ExcludeLabelSelector != "" {
+		// 这里可以添加标签选择器逻辑
 		return false
 	}
 
 	return true
 }
 
-// shouldMonitorPodByNamespace 检查是否应该监控指定命名空间的Pod
+// shouldMonitorPodByNamespace 根据命名空间判断是否应该监控Pod
 func (m *SmartLimitManager) shouldMonitorPodByNamespace(namespace string) bool {
 	for _, excludeNS := range m.config.ExcludeNamespaces {
 		if namespace == excludeNS {
@@ -576,17 +472,12 @@ func (m *SmartLimitManager) shouldMonitorPodByNamespace(namespace string) bool {
 }
 
 // parseContainerID 解析容器ID
-func parseContainerID(k8sID string) string {
-	if k8sID == "" {
-		return ""
+func parseContainerID(containerID string) string {
+	if len(containerID) >= 9 && containerID[:9] == "docker://" {
+		return containerID[9:]
 	}
-
-	prefixes := []string{"docker://", "containerd://"}
-	for _, prefix := range prefixes {
-		if len(k8sID) > len(prefix) && k8sID[:len(prefix)] == prefix {
-			return k8sID[len(prefix):]
-		}
+	if len(containerID) >= 13 && containerID[:13] == "containerd://" {
+		return containerID[13:]
 	}
-
-	return k8sID
+	return containerID
 }

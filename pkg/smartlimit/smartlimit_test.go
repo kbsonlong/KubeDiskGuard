@@ -4,28 +4,29 @@ import (
 	"testing"
 	"time"
 
-	"KubeDiskGuard/pkg/cgroup"
+	"KubeDiskGuard/pkg/config"
+	"KubeDiskGuard/pkg/kubelet"
 )
 
 func TestCalculateIOTrend(t *testing.T) {
-	config := &SmartLimitConfig{
-		Enabled:           true,
-		MonitorInterval:   60 * time.Second,
-		HistoryWindow:     10 * time.Minute,
-		HighIOThreshold:   1000,
-		AutoLimitIOPS:     500,
-		AutoLimitBPS:      1024 * 1024, // 1MB/s
-		AnnotationPrefix:  "iops-limit",
-		ExcludeNamespaces: []string{"kube-system"},
+	cfg := &config.Config{
+		SmartLimitEnabled:          true,
+		SmartLimitMonitorInterval:  60,
+		SmartLimitHistoryWindow:    10,
+		SmartLimitHighIOThreshold:  1000,
+		SmartLimitAutoIOPS:         500,
+		SmartLimitAutoBPS:          1024 * 1024, // 1MB/s
+		SmartLimitAnnotationPrefix: "io-limit",
+		ExcludeNamespaces:          []string{"kube-system"},
 	}
 
 	manager := &SmartLimitManager{
-		config:  config,
+		config:  cfg,
 		history: make(map[string]*ContainerIOHistory),
 	}
 
 	// 创建模拟的IO统计数据
-	stats := []*cgroup.IOStats{
+	stats := []*kubelet.IOStats{
 		{
 			ContainerID: "test-container",
 			Timestamp:   time.Now().Add(-5 * time.Minute),
@@ -73,18 +74,18 @@ func TestCalculateIOTrend(t *testing.T) {
 }
 
 func TestShouldApplyLimit(t *testing.T) {
-	config := &SmartLimitConfig{
-		Enabled:           true,
-		HighIOThreshold:   1000,        // IOPS阈值
-		HighBPSThreshold:  1024 * 1024, // BPS阈值（1MB/s）
-		AutoLimitIOPS:     500,
-		AutoLimitBPS:      1024 * 1024,
-		AnnotationPrefix:  "iops-limit",
-		ExcludeNamespaces: []string{"kube-system"},
+	cfg := &config.Config{
+		SmartLimitEnabled:          true,
+		SmartLimitHighIOThreshold:  1000,        // IOPS阈值
+		SmartLimitHighBPSThreshold: 1024 * 1024, // BPS阈值（1MB/s）
+		SmartLimitAutoIOPS:         500,
+		SmartLimitAutoBPS:          1024 * 1024,
+		SmartLimitAnnotationPrefix: "io-limit",
+		ExcludeNamespaces:          []string{"kube-system"},
 	}
 
 	manager := &SmartLimitManager{
-		config: config,
+		config: cfg,
 	}
 
 	// 测试高IO情况（IOPS超过阈值）
@@ -132,117 +133,85 @@ func TestShouldApplyLimit(t *testing.T) {
 	}
 }
 
-func TestCalculateLimitIOPS(t *testing.T) {
-	config := &SmartLimitConfig{
-		Enabled:           true,
-		HighIOThreshold:   1000,
-		AutoLimitIOPS:     500,
-		AutoLimitBPS:      1024 * 1024,
-		AnnotationPrefix:  "iops-limit",
-		ExcludeNamespaces: []string{"kube-system"},
-	}
-
-	manager := &SmartLimitManager{
-		config: config,
-	}
-
-	trend := &IOTrend{
-		ReadIOPS15m:  1500,
-		WriteIOPS15m: 1600,
-		ReadIOPS30m:  1400,
-		WriteIOPS30m: 1500,
-		ReadIOPS60m:  1300,
-		WriteIOPS60m: 1400,
-	}
-
-	limitIOPS := manager.calculateLimitIOPS(trend)
-
-	// 验证限速值在合理范围内
-	expectedMin := config.AutoLimitIOPS
-	expectedMax := int((1500 + 1600) * 0.8) // 最高IOPS的80%
-
-	if limitIOPS < expectedMin {
-		t.Errorf("Expected limitIOPS >= %d, got %d", expectedMin, limitIOPS)
-	}
-	if limitIOPS > expectedMax {
-		t.Errorf("Expected limitIOPS <= %d, got %d", expectedMax, limitIOPS)
-	}
-
-	t.Logf("Calculated limit IOPS: %d", limitIOPS)
-}
-
-func TestCalculateLimitBPS(t *testing.T) {
-	config := &SmartLimitConfig{
-		Enabled:           true,
-		HighIOThreshold:   1000,
-		AutoLimitIOPS:     500,
-		AutoLimitBPS:      1024 * 1024,
-		AnnotationPrefix:  "iops-limit",
-		ExcludeNamespaces: []string{"kube-system"},
-	}
-
-	manager := &SmartLimitManager{
-		config: config,
-	}
-
-	trend := &IOTrend{
-		ReadBPS15m:  2 * 1024 * 1024,
-		WriteBPS15m: 2.5 * 1024 * 1024,
-		ReadBPS30m:  1.8 * 1024 * 1024,
-		WriteBPS30m: 2.2 * 1024 * 1024,
-		ReadBPS60m:  1.6 * 1024 * 1024,
-		WriteBPS60m: 2.0 * 1024 * 1024,
-	}
-
-	limitBPS := manager.calculateLimitBPS(trend)
-
-	// 验证限速值在合理范围内
-	expectedMin := config.AutoLimitBPS
-	expectedMax := int((2.5*1024*1024 + 2.5*1024*1024) * 0.8) // 最高BPS的80%
-
-	if limitBPS < expectedMin {
-		t.Errorf("Expected limitBPS >= %d, got %d", expectedMin, limitBPS)
-	}
-	if limitBPS > expectedMax {
-		t.Errorf("Expected limitBPS <= %d, got %d", expectedMax, limitBPS)
-	}
-
-	t.Logf("Calculated limit BPS: %d", limitBPS)
-}
-
 func TestParseContainerID(t *testing.T) {
 	tests := []struct {
 		name     string
-		k8sID    string
+		input    string
 		expected string
 	}{
 		{
 			name:     "docker container ID",
-			k8sID:    "docker://abc123def456",
-			expected: "abc123def456",
+			input:    "docker://1234567890abcdef",
+			expected: "1234567890abcdef",
 		},
 		{
 			name:     "containerd container ID",
-			k8sID:    "containerd://xyz789uvw012",
-			expected: "xyz789uvw012",
+			input:    "containerd://abcdef1234567890",
+			expected: "abcdef1234567890",
 		},
 		{
 			name:     "plain container ID",
-			k8sID:    "plain123id",
-			expected: "plain123id",
+			input:    "1234567890abcdef",
+			expected: "1234567890abcdef",
 		},
 		{
-			name:     "empty container ID",
-			k8sID:    "",
+			name:     "empty string",
+			input:    "",
 			expected: "",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := parseContainerID(tt.k8sID)
+			result := parseContainerID(tt.input)
 			if result != tt.expected {
-				t.Errorf("parseContainerID(%s) = %s, expected %s", tt.k8sID, result, tt.expected)
+				t.Errorf("parseContainerID(%s) = %s, want %s", tt.input, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestShouldMonitorPodByNamespace(t *testing.T) {
+	cfg := &config.Config{
+		ExcludeNamespaces: []string{"kube-system", "default"},
+	}
+
+	manager := &SmartLimitManager{
+		config: cfg,
+	}
+
+	tests := []struct {
+		name      string
+		namespace string
+		expected  bool
+	}{
+		{
+			name:      "excluded namespace kube-system",
+			namespace: "kube-system",
+			expected:  false,
+		},
+		{
+			name:      "excluded namespace default",
+			namespace: "default",
+			expected:  false,
+		},
+		{
+			name:      "included namespace",
+			namespace: "my-app",
+			expected:  true,
+		},
+		{
+			name:      "empty namespace",
+			namespace: "",
+			expected:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := manager.shouldMonitorPodByNamespace(tt.namespace)
+			if result != tt.expected {
+				t.Errorf("shouldMonitorPodByNamespace(%s) = %v, want %v", tt.namespace, result, tt.expected)
 			}
 		})
 	}

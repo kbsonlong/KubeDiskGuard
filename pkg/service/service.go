@@ -6,13 +6,13 @@ import (
 	"os"
 	"reflect"
 	"strconv"
-	"time"
 
 	"KubeDiskGuard/pkg/cgroup"
 	"KubeDiskGuard/pkg/config"
 	"KubeDiskGuard/pkg/container"
 	"KubeDiskGuard/pkg/detector"
 	"KubeDiskGuard/pkg/kubeclient"
+	"KubeDiskGuard/pkg/kubelet"
 	"KubeDiskGuard/pkg/runtime"
 	"KubeDiskGuard/pkg/smartlimit"
 
@@ -78,28 +78,34 @@ func NewKubeDiskGuardService(config *config.Config) (*KubeDiskGuardService, erro
 	// 初始化智能限速管理器
 	if config.SmartLimitEnabled {
 		cgroupMgr := cgroup.NewManager(config.CgroupVersion)
-		smartLimitConfig := &smartlimit.SmartLimitConfig{
-			Enabled:           config.SmartLimitEnabled,
-			MonitorInterval:   time.Duration(config.SmartLimitMonitorInterval) * time.Second,
-			HistoryWindow:     time.Duration(config.SmartLimitHistoryWindow) * time.Minute,
-			HighIOThreshold:   config.SmartLimitHighIOThreshold,
-			HighBPSThreshold:  config.SmartLimitHighBPSThreshold,
-			AutoLimitIOPS:     config.SmartLimitAutoIOPS,
-			AutoLimitBPS:      config.SmartLimitAutoBPS,
-			AnnotationPrefix:  config.SmartLimitAnnotationPrefix,
-			ExcludeNamespaces: config.ExcludeNamespaces,
 
-			// kubelet API配置
-			UseKubeletAPI:     config.SmartLimitUseKubeletAPI,
-			KubeletHost:       config.KubeletHost,
-			KubeletPort:       config.KubeletPort,
-			KubeletTokenPath:  config.KubeletTokenPath,
-			KubeletCAPath:     config.KubeletCAPath,
-			KubeletSkipVerify: config.KubeletSkipVerify,
+		// 初始化kubelet客户端
+		var kubeletClient *kubelet.KubeletClient
+		if config.SmartLimitUseKubeletAPI && config.KubeletHost != "" && config.KubeletPort != "" {
+			var err error
+			kubeletClient, err = kubelet.NewKubeletClient(
+				config.KubeletHost,
+				config.KubeletPort,
+				config.KubeletTokenPath,
+				config.KubeletCAPath,
+				config.KubeletSkipVerify,
+			)
+			if err != nil {
+				log.Printf("Failed to create kubelet client: %v", err)
+			} else {
+				log.Printf("Kubelet client initialized for host: %s:%s", config.KubeletHost, config.KubeletPort)
+			}
 		}
 
-		service.smartLimit = smartlimit.NewSmartLimitManager(smartLimitConfig, cgroupMgr, service.kubeClient)
-		log.Printf("Smart limit manager initialized with config: %+v", smartLimitConfig)
+		// 类型断言
+		kubeClient, ok := service.kubeClient.(*kubeclient.KubeClient)
+		if !ok {
+			log.Printf("Warning: kubeClient is not *kubeclient.KubeClient, smart limit may not work properly")
+			kubeClient = nil
+		}
+
+		service.smartLimit = smartlimit.NewSmartLimitManager(config, kubeClient, kubeletClient, cgroupMgr)
+		log.Printf("Smart limit manager initialized")
 	}
 
 	return service, nil
@@ -289,37 +295,65 @@ func ParseIopsLimitFromAnnotations(ann map[string]string, defaultRead, defaultWr
 	}
 
 	// 检查是否有智能限速注解
-	if smartLimit, exists := ann["iops-limit/smart-limit"]; exists && smartLimit == "true" {
-		if autoIOPS, exists := ann["iops-limit/auto-iops"]; exists {
+	if smartLimit, exists := ann["io-limit/smart-limit"]; exists && smartLimit == "true" {
+		if autoIOPS, exists := ann["io-limit/auto-iops"]; exists {
 			if iops, err := strconv.Atoi(autoIOPS); err == nil && iops > 0 {
 				return iops, iops // 智能限速时读写使用相同值
 			}
 		}
 	}
 
-	// 原有的注解解析逻辑
-	if val, exists := ann["iops-limit"]; exists {
+	// 优先级1: io-limit/iops (统一IOPS限制，最高优先级)
+	if val, exists := ann["io-limit/iops"]; exists {
+		if iops, err := strconv.Atoi(val); err == nil {
+			return iops, iops
+		}
+	}
+
+	// 优先级2: 分别设置读写IOPS
+	readSet := false
+	writeSet := false
+
+	if val, exists := ann["io-limit/read-iops"]; exists {
+		if iops, err := strconv.Atoi(val); err == nil {
+			readIops = iops
+			readSet = true
+		}
+	}
+
+	if val, exists := ann["io-limit/write-iops"]; exists {
+		if iops, err := strconv.Atoi(val); err == nil {
+			writeIops = iops
+			writeSet = true
+		}
+	}
+
+	// 优先级3: 兼容旧格式
+	if val, exists := ann["io-limit"]; exists {
 		if iops, err := strconv.Atoi(val); err == nil && iops > 0 {
 			return iops, iops
 		}
 	}
 
-	if val, exists := ann["iops-limit/read"]; exists {
+	if val, exists := ann["io-limit/read"]; exists {
 		if iops, err := strconv.Atoi(val); err == nil && iops > 0 {
 			readIops = iops
+			readSet = true
 		}
 	}
 
-	if val, exists := ann["iops-limit/write"]; exists {
+	if val, exists := ann["io-limit/write"]; exists {
 		if iops, err := strconv.Atoi(val); err == nil && iops > 0 {
 			writeIops = iops
+			writeSet = true
 		}
 	}
 
-	if readIops == 0 {
+	// 如果某个值没有被设置，使用默认值
+	if !readSet {
 		readIops = defaultRead
 	}
-	if writeIops == 0 {
+	if !writeSet {
 		writeIops = defaultWrite
 	}
 
@@ -353,9 +387,7 @@ func (s *KubeDiskGuardService) Close() error {
 func (s *KubeDiskGuardService) Run() error {
 	// 启动智能限速监控
 	if s.smartLimit != nil {
-		if err := s.smartLimit.Start(); err != nil {
-			log.Printf("Failed to start smart limit manager: %v", err)
-		}
+		s.smartLimit.Start()
 	}
 
 	// 处理现有容器
@@ -435,31 +467,44 @@ func ParseBpsLimitFromAnnotations(ann map[string]string, defaultRead, defaultWri
 	}
 
 	// 检查是否有智能限速注解
-	if smartLimit, exists := ann["iops-limit/smart-limit"]; exists && smartLimit == "true" {
-		if autoBPS, exists := ann["iops-limit/auto-bps"]; exists {
+	if smartLimit, exists := ann["io-limit/smart-limit"]; exists && smartLimit == "true" {
+		if autoBPS, exists := ann["io-limit/auto-bps"]; exists {
 			if bps, err := strconv.Atoi(autoBPS); err == nil && bps > 0 {
 				return bps, bps // 智能限速时读写使用相同值
 			}
 		}
 	}
 
-	// 原有的注解解析逻辑
-	if val, exists := ann["iops-limit/read-bps"]; exists {
-		if bps, err := parseBpsValue(val); err == nil && bps > 0 {
+	// 优先级1: io-limit/bps (统一BPS限制，最高优先级)
+	if val, exists := ann["io-limit/bps"]; exists {
+		if bps, err := parseBpsValue(val); err == nil {
+			return bps, bps
+		}
+	}
+
+	// 优先级2: 分别设置读写BPS
+	readSet := false
+	writeSet := false
+
+	if val, exists := ann["io-limit/read-bps"]; exists {
+		if bps, err := parseBpsValue(val); err == nil {
 			readBps = bps
+			readSet = true
 		}
 	}
 
-	if val, exists := ann["iops-limit/write-bps"]; exists {
-		if bps, err := parseBpsValue(val); err == nil && bps > 0 {
+	if val, exists := ann["io-limit/write-bps"]; exists {
+		if bps, err := parseBpsValue(val); err == nil {
 			writeBps = bps
+			writeSet = true
 		}
 	}
 
-	if readBps == 0 {
+	// 如果某个值没有被设置，使用默认值
+	if !readSet {
 		readBps = defaultRead
 	}
-	if writeBps == 0 {
+	if !writeSet {
 		writeBps = defaultWrite
 	}
 

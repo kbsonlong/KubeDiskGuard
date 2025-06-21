@@ -116,14 +116,14 @@ func TestParseIopsLimitFromAnnotations(t *testing.T) {
 		expectW  int
 	}{
 		{"no annotation", map[string]string{}, 100, 200, 100, 200},
-		{"read-iops only", map[string]string{"iops-limit/read-iops": "1234"}, 100, 200, 1234, 200},
-		{"write-iops only", map[string]string{"iops-limit/write-iops": "5678"}, 100, 200, 100, 5678},
-		{"both read/write", map[string]string{"iops-limit/read-iops": "1234", "iops-limit/write-iops": "5678"}, 100, 200, 1234, 5678},
-		{"iops overrides", map[string]string{"iops-limit/iops": "9999"}, 100, 200, 9999, 9999},
-		{"all present, iops highest", map[string]string{"iops-limit/read-iops": "1234", "iops-limit/write-iops": "5678", "iops-limit/iops": "8888"}, 100, 200, 8888, 8888},
-		{"read-iops 0", map[string]string{"iops-limit/read-iops": "0"}, 100, 200, 0, 200},
-		{"write-iops 0", map[string]string{"iops-limit/write-iops": "0"}, 100, 200, 100, 0},
-		{"iops 0", map[string]string{"iops-limit/iops": "0"}, 100, 200, 0, 0},
+		{"read-iops only", map[string]string{"io-limit/read-iops": "1234"}, 100, 200, 1234, 200},
+		{"write-iops only", map[string]string{"io-limit/write-iops": "5678"}, 100, 200, 100, 5678},
+		{"both read/write", map[string]string{"io-limit/read-iops": "1234", "io-limit/write-iops": "5678"}, 100, 200, 1234, 5678},
+		{"iops overrides", map[string]string{"io-limit/iops": "9999"}, 100, 200, 9999, 9999},
+		{"all present, iops highest", map[string]string{"io-limit/read-iops": "1234", "io-limit/write-iops": "5678", "io-limit/iops": "8888"}, 100, 200, 8888, 8888},
+		{"read-iops 0", map[string]string{"io-limit/read-iops": "0"}, 100, 200, 0, 200},
+		{"write-iops 0", map[string]string{"io-limit/write-iops": "0"}, 100, 200, 100, 0},
+		{"iops 0", map[string]string{"io-limit/iops": "0"}, 100, 200, 0, 0},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -145,14 +145,14 @@ func TestParseBpsLimitFromAnnotations(t *testing.T) {
 		expectW  int
 	}{
 		{"no annotation", map[string]string{}, 100, 200, 100, 200},
-		{"read-bps only", map[string]string{"iops-limit/read-bps": "1234"}, 100, 200, 1234, 200},
-		{"write-bps only", map[string]string{"iops-limit/write-bps": "5678"}, 100, 200, 100, 5678},
-		{"both read/write", map[string]string{"iops-limit/read-bps": "1234", "iops-limit/write-bps": "5678"}, 100, 200, 1234, 5678},
-		{"bps overrides", map[string]string{"iops-limit/bps": "9999"}, 100, 200, 9999, 9999},
-		{"all present, bps highest", map[string]string{"iops-limit/read-bps": "1234", "iops-limit/write-bps": "5678", "iops-limit/bps": "8888"}, 100, 200, 8888, 8888},
-		{"read-bps 0", map[string]string{"iops-limit/read-bps": "0"}, 100, 200, 0, 200},
-		{"write-bps 0", map[string]string{"iops-limit/write-bps": "0"}, 100, 200, 100, 0},
-		{"bps 0", map[string]string{"iops-limit/bps": "0"}, 100, 200, 0, 0},
+		{"read-bps only", map[string]string{"io-limit/read-bps": "1234"}, 100, 200, 1234, 200},
+		{"write-bps only", map[string]string{"io-limit/write-bps": "5678"}, 100, 200, 100, 5678},
+		{"both read/write", map[string]string{"io-limit/read-bps": "1234", "io-limit/write-bps": "5678"}, 100, 200, 1234, 5678},
+		{"bps overrides", map[string]string{"io-limit/bps": "9999"}, 100, 200, 9999, 9999},
+		{"all present, bps highest", map[string]string{"io-limit/read-bps": "1234", "io-limit/write-bps": "5678", "io-limit/bps": "8888"}, 100, 200, 8888, 8888},
+		{"read-bps 0", map[string]string{"io-limit/read-bps": "0"}, 100, 200, 0, 200},
+		{"write-bps 0", map[string]string{"io-limit/write-bps": "0"}, 100, 200, 100, 0},
+		{"bps 0", map[string]string{"io-limit/bps": "0"}, 100, 200, 0, 0},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

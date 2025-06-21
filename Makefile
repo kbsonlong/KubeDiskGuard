@@ -1,11 +1,11 @@
 # 变量定义
-IMAGE_NAME ?= iops-limit-service
+IMAGE_NAME ?= io-limit-service
 IMAGE_TAG ?= latest
 REGISTRY ?= registry.kbsonlong.com
 FULL_IMAGE_NAME = $(REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG)
 
 # Go 相关变量
-BINARY_NAME = iops-limit-service
+BINARY_NAME = io-limit-service
 MAIN_FILE = main.go
 
 # 默认目标
@@ -27,8 +27,8 @@ build-local: ## 构建本地二进制文件
 .PHONY: build-multiarch
 build-multiarch: ## 多架构本地编译
 	@echo "多架构本地编译..."
-	GOOS=linux GOARCH=amd64 go build -o iops-limit-service-amd64 main.go
-	GOOS=linux GOARCH=arm64 go build -o iops-limit-service-arm64 main.go
+	GOOS=linux GOARCH=amd64 go build -o io-limit-service-amd64 main.go
+	GOOS=linux GOARCH=arm64 go build -o io-limit-service-arm64 main.go
 
 .PHONY: docker-build
 docker-build: ## 构建 Docker 镜像
@@ -71,7 +71,7 @@ run-docker: ## 在 Docker 中运行服务
 .PHONY: deploy
 deploy: ## 部署到 Kubernetes
 	@echo "部署到 Kubernetes..."
-	@sed 's|your-registry/iops-limit-service:latest|$(FULL_IMAGE_NAME)|g' k8s-daemonset.yaml | kubectl apply -f -
+	@sed 's|your-registry/io-limit-service:latest|$(FULL_IMAGE_NAME)|g' k8s-daemonset.yaml | kubectl apply -f -
 
 .PHONY: undeploy
 undeploy: ## 从 Kubernetes 卸载
@@ -81,15 +81,15 @@ undeploy: ## 从 Kubernetes 卸载
 .PHONY: logs
 logs: ## 查看服务日志
 	@echo "查看服务日志..."
-	kubectl logs -n kube-system -l app=iops-limit-service -f
+	kubectl logs -n kube-system -l app=io-limit-service -f
 
 .PHONY: status
 status: ## 查看服务状态
 	@echo "查看 DaemonSet 状态..."
-	kubectl get daemonset -n kube-system iops-limit-service
+	kubectl get daemonset -n kube-system io-limit-service
 	@echo ""
 	@echo "查看 Pod 状态..."
-	kubectl get pods -n kube-system -l app=iops-limit-service
+	kubectl get pods -n kube-system -l app=io-limit-service
 
 .PHONY: test
 test: ## 运行测试

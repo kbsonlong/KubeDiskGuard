@@ -1,23 +1,23 @@
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
-  name: iops-limit-service
+  name: io-limit-service
   namespace: kube-system
   labels:
-    app: iops-limit-service
+    app: io-limit-service
 spec:
   selector:
     matchLabels:
-      app: iops-limit-service
+      app: io-limit-service
   template:
     metadata:
       labels:
-        app: iops-limit-service
+        app: io-limit-service
     spec:
-      serviceAccountName: iops-limit-service
+      serviceAccountName: io-limit-service
       containers:
-      - name: iops-limit-service
-        image: your-registry/iops-limit-service:latest
+      - name: io-limit-service
+        image: your-registry/io-limit-service:latest
         env:
         # 基础配置
         - name: NODE_NAME
@@ -57,7 +57,7 @@ spec:
         - name: SMART_LIMIT_AUTO_BPS
           value: "524288"  # 512KB/s 最小BPS限速值
         - name: SMART_LIMIT_ANNOTATION_PREFIX
-          value: "iops-limit"
+          value: "io-limit"
         
         # kubelet API配置
         - name: KUBELET_HOST
@@ -161,13 +161,13 @@ spec:
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: iops-limit-service
+  name: io-limit-service
   namespace: kube-system
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: iops-limit-service
+  name: io-limit-service
 rules:
 - apiGroups: [""]
   resources: ["pods"]
@@ -179,12 +179,12 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: iops-limit-service
+  name: io-limit-service
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: iops-limit-service
+  name: io-limit-service
 subjects:
 - kind: ServiceAccount
-  name: iops-limit-service
+  name: io-limit-service
   namespace: kube-system 

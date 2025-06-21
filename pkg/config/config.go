@@ -59,8 +59,8 @@ func GetDefaultConfig() *Config {
 		ContainerRuntime:           "auto",
 		CgroupVersion:              "auto",
 		ContainerSocketPath:        "/run/containerd/containerd.sock",
-		KubeletHost:                "",
-		KubeletPort:                "",
+		KubeletHost:                "localhost",
+		KubeletPort:                "10250",
 		KubeConfigPath:             "",
 		SmartLimitEnabled:          false,
 		SmartLimitMonitorInterval:  60,
@@ -69,11 +69,11 @@ func GetDefaultConfig() *Config {
 		SmartLimitHighBPSThreshold: 0.8,
 		SmartLimitAutoIOPS:         0,
 		SmartLimitAutoBPS:          0,
-		SmartLimitAnnotationPrefix: "",
+		SmartLimitAnnotationPrefix: "io-limit",
 		KubeletTokenPath:           "",
 		KubeletCAPath:              "",
 		KubeletSkipVerify:          false,
-		SmartLimitUseKubeletAPI:    false,
+		SmartLimitUseKubeletAPI:    true, // 默认启用kubelet API
 	}
 }
 

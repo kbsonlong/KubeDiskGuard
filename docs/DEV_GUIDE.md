@@ -51,7 +51,7 @@
   ```
 - 构建二进制：
   ```bash
-  go build -o iops-limit-service main.go
+  go build -o io-limit-service main.go
   ```
 - 运行全部单元测试：
   ```bash

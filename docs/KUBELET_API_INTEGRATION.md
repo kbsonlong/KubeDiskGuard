@@ -66,12 +66,12 @@ KubeDiskGuard 现在支持通过 kubelet API 获取容器的 IO 统计信息，�
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
-  name: iops-limit-service
+  name: io-limit-service
 spec:
   template:
     spec:
       containers:
-      - name: iops-limit-service
+      - name: io-limit-service
         env:
         # 启用 kubelet API
         - name: SMART_LIMIT_USE_KUBELET_API
@@ -107,10 +107,10 @@ go run cmd/test-kubelet-api/main.go \
 
 ```bash
 # 查看服务日志
-kubectl logs -n kube-system -l app=iops-limit-service | grep -i "kubelet"
+kubectl logs -n kube-system -l app=io-limit-service | grep -i "kubelet"
 
 # 检查是否使用 kubelet API
-kubectl logs -n kube-system -l app=iops-limit-service | grep -i "kubelet client initialized"
+kubectl logs -n kube-system -l app=io-limit-service | grep -i "kubelet client initialized"
 ```
 
 ## 数据格式对比

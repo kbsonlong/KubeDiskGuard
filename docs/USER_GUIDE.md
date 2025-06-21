@@ -26,27 +26,35 @@ Kubernetes NVMe IOPS/BPS 限速服务是一款以 DaemonSet 方式部署在每�
 
 ## 注解与环境变量配置
 ### 注解（Pod.metadata.annotations）
-- `iops-limit/read-iops`：读IOPS限制
-- `iops-limit/write-iops`：写IOPS限制
-- `iops-limit/iops`：读写IOPS统一限制
-- `iops-limit/read-bps`：读带宽限制（字节/秒）
-- `iops-limit/write-bps`：写带宽限制（字节/秒）
-- `iops-limit/bps`：读写带宽统一限制
+- `io-limit/read-iops`：读IOPS限制
+- `io-limit/write-iops`：写IOPS限制
+- `io-limit/iops`：读写IOPS统一限制（优先级最高）
+- `io-limit/read-bps`：读带宽限制（字节/秒）
+- `io-limit/write-bps`：写带宽限制（字节/秒）
+- `io-limit/bps`：读写带宽统一限制（优先级最高）
 
 **优先级说明**：
-- `read-iops`/`write-iops` > `iops`
-- `read-bps`/`write-bps` > `bps`
-- 注解为0表示解除对应方向的限速
+- IOPS限速优先级：
+  1. `io-limit/iops`（如有，优先使用，读写都为此值）
+  2. `io-limit/read-iops`、`io-limit/write-iops`（分别设置读写，任意一个缺失则用默认值）
+  3. `io-limit`（兼容老格式，读写都为此值，且大于0时生效）
+  4. `io-limit/read`、`io-limit/write`（兼容老格式，且大于0时生效）
+- BPS限速优先级：
+  1. `io-limit/bps`（如有，优先使用，读写都为此值）
+  2. `io-limit/read-bps`、`io-limit/write-bps`（分别设置读写，任意一个缺失则用默认值）
+
+- 注解值为0表示解除对应方向的限速（如`io-limit/read-iops: "0"`表示解除读IOPS限速）
+- 未设置的方向使用全局默认值
 
 **示例**：
 ```yaml
 annotations:
-  iops-limit/read-iops: "1200"
-  iops-limit/write-iops: "800"
-  iops-limit/iops: "1000"
-  iops-limit/read-bps: "10485760"   # 10MB/s
-  iops-limit/write-bps: "5242880"   # 5MB/s
-  iops-limit/bps: "8388608"         # 8MB/s
+  io-limit/read-iops: "1200"
+  io-limit/write-iops: "800"
+  io-limit/iops: "1000"
+  io-limit/read-bps: "10485760"   # 10MB/s
+  io-limit/write-bps: "5242880"   # 5MB/s
+  io-limit/bps: "8388608"         # 8MB/s
 ```
 
 ### 环境变量

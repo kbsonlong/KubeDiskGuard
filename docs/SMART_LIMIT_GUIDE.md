@@ -44,7 +44,7 @@
 |---------|--------|------|
 | `SMART_LIMIT_AUTO_IOPS` | 0 | 最小 IOPS 限速值（0表示基于当前IO计算） |
 | `SMART_LIMIT_AUTO_BPS` | 0 | 最小 BPS 限速值（0表示基于当前IO计算） |
-| `SMART_LIMIT_ANNOTATION_PREFIX` | iops-limit | 注解前缀 |
+| `SMART_LIMIT_ANNOTATION_PREFIX` | io-limit | 注解前缀 |
 
 ## 使用示例
 
@@ -54,12 +54,12 @@
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
-  name: iops-limit-service
+  name: io-limit-service
 spec:
   template:
     spec:
       containers:
-      - name: iops-limit-service
+      - name: io-limit-service
         env:
         # 启用智能限速
         - name: SMART_LIMIT_ENABLED
@@ -91,10 +91,10 @@ spec:
 ```yaml
 metadata:
   annotations:
-    iops-limit/smart-limit: "true"           # 标识为智能限速
-    iops-limit/auto-iops: "800"              # 自动计算的IOPS值
-    iops-limit/auto-bps: "1048576"           # 自动计算的BPS值
-    iops-limit/limit-reason: "high-io-detected" # 限速原因
+    io-limit/smart-limit: "true"           # 标识为智能限速
+    io-limit/auto-iops: "800"              # 自动计算的IOPS值
+    io-limit/auto-bps: "1048576"           # 自动计算的BPS值
+    io-limit/limit-reason: "high-io-detected" # 限速原因
 ```
 
 ### 3. 测试高 IO 场景
@@ -109,7 +109,7 @@ kubectl apply -f examples/test-pod.yaml
 kubectl get pods -l app=high-io-test
 
 # 查看服务日志
-kubectl logs -n kube-system -l app=iops-limit-service -f
+kubectl logs -n kube-system -l app=io-limit-service -f
 
 # 检查 Pod 注解
 kubectl get pod high-io-test -o yaml | grep -A 10 annotations
@@ -121,10 +121,10 @@ kubectl get pod high-io-test -o yaml | grep -A 10 annotations
 
 ```bash
 # 查看智能限速相关日志
-kubectl logs -n kube-system -l app=iops-limit-service | grep -i "smart"
+kubectl logs -n kube-system -l app=io-limit-service | grep -i "smart"
 
 # 查看 IO 监控日志
-kubectl logs -n kube-system -l app=iops-limit-service | grep -i "io"
+kubectl logs -n kube-system -l app=io-limit-service | grep -i "io"
 ```
 
 ### 2. 检查 cgroup 统计
@@ -202,13 +202,13 @@ resources:
 **排查步骤**：
 ```bash
 # 检查配置
-kubectl get configmap -n kube-system iops-limit-config -o yaml
+kubectl get configmap -n kube-system io-limit-config -o yaml
 
 # 查看服务日志
-kubectl logs -n kube-system -l app=iops-limit-service | grep -i "smart"
+kubectl logs -n kube-system -l app=io-limit-service | grep -i "smart"
 
 # 检查 Pod 是否被过滤
-kubectl logs -n kube-system -l app=iops-limit-service | grep -i "skip"
+kubectl logs -n kube-system -l app=io-limit-service | grep -i "skip"
 ```
 
 ### 2. 限速值不合理
@@ -221,7 +221,7 @@ kubectl logs -n kube-system -l app=iops-limit-service | grep -i "skip"
 **排查步骤**：
 ```bash
 # 查看 IO 趋势计算日志
-kubectl logs -n kube-system -l app=iops-limit-service | grep -i "trend"
+kubectl logs -n kube-system -l app=io-limit-service | grep -i "trend"
 
 # 检查 cgroup 统计数据
 kubectl exec -n kube-system <pod-name> -- cat /sys/fs/cgroup/io.stat

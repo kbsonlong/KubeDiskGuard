@@ -5,9 +5,278 @@
 <h1 align="center">KubeDiskGuard</h1>
 <p align="center">Kubernetes 节点级磁盘 IO 资源守护与限速服务</p>
 
-# Kubernetes NVMe 磁盘 IOPS/BPS 限速服务
+# Kubernetes NVMe 磁盘 IOPS 限速服务
 
-这是一个用 Go 语言编写的 Kubernetes DaemonSet 服务，用于自动限制容器对 NVMe 磁盘的 IOPS/BPS 访问，防止单个容器的高 IO 操作影响宿主机性能。
+一个基于 Go 语言的 Kubernetes 节点级磁盘 IO 资源守护与限速服务，作为 DaemonSet 运行在每个工作节点上，通过 client-go 监听 Pod 事件，根据 Pod 注解动态调整容器的 IOPS/BPS 限制。
+
+## 核心特性
+
+### 🚀 主要功能
+- **动态 IOPS/BPS 限速**: 根据 Pod 注解实时调整容器磁盘 IO 限制
+- **智能限速**: 基于 cAdvisor 指标自动检测高 IO 容器并应用限速
+- **多运行时支持**: 支持 Docker 和 Containerd 容器运行时
+- **cgroup 兼容**: 支持 cgroup v1 和 v2
+- **注解驱动**: 通过 Kubernetes Pod 注解配置限速策略
+
+### 🏗️ 架构优化
+- **保留 cgroup 限速操作**: 继续使用 cgroup 文件系统进行实际的 IO 限速
+- **删除 cgroup 计算功能**: 移除通过 cgroup 文件系统计算 IOPS/BPS 的复杂逻辑
+- **kubelet API 集成**: 通过 kubelet API 获取 cAdvisor 数据，简化复杂度
+- **统一数据源**: 智能限速和监控都使用 kubelet API 作为数据源
+
+## 工作原理
+
+### 1. 限速机制
+```mermaid
+graph TD
+    A[Pod 注解变更] --> B[client-go 监听]
+    B --> C[解析 IOPS/BPS 限制]
+    C --> D[查找容器 cgroup 路径]
+    D --> E[写入 cgroup 限速文件]
+    E --> F[容器 IO 被限制]
+```
+
+### 2. 智能限速流程
+```mermaid
+graph TD
+    A[kubelet API] --> B[cAdvisor 指标]
+    B --> C[IO 趋势分析]
+    C --> D{是否超过阈值?}
+    D -->|是| E[更新 Pod 注解]
+    E --> F[触发限速]
+    D -->|否| G[继续监控]
+```
+
+### 3. 数据流优化
+- **历史方案**: cgroup 文件读取 → 复杂解析 → IO 计算
+- **优化方案**: kubelet API → cAdvisor 指标 → 直接计算
+
+## 快速开始
+
+### 1. 部署服务
+
+```bash
+# 克隆项目
+git clone <repository-url>
+cd io-limit-service
+
+# 构建镜像
+make build
+
+# 部署 DaemonSet
+kubectl apply -f k8s-daemonset.yaml
+```
+
+### 2. 配置 Pod 注解
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: example-pod
+  annotations:
+    # 统一 IOPS 限制
+    io-limit: "1000"
+    
+    # 分别设置读写 IOPS
+    io-limit/read: "800"
+    io-limit/write: "600"
+    
+    # 分别设置读写 BPS (字节/秒)
+    io-limit/read-bps: "1048576"  # 1MB/s
+    io-limit/write-bps: "524288"  # 512KB/s
+spec:
+  containers:
+  - name: app
+    image: nginx
+```
+
+### 3. 启用智能限速
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: io-limit-config
+data:
+  config.json: |
+    {
+      "smart_limit_enabled": true,
+      "smart_limit_monitor_interval": 60,
+      "smart_limit_high_io_threshold": 0.8,
+      "smart_limit_auto_iops": 500,
+      "smart_limit_auto_bps": 1048576,
+      "smart_limit_annotation_prefix": "io-limit"
+    }
+```
+
+## 配置说明
+
+### 基础配置
+
+| 配置项 | 默认值 | 说明 |
+|--------|--------|------|
+| `container_iops_limit` | 500 | 默认 IOPS 限制 |
+| `container_read_iops_limit` | 500 | 默认读 IOPS 限制 |
+| `container_write_iops_limit` | 500 | 默认写 IOPS 限制 |
+| `container_read_bps_limit` | 0 | 默认读 BPS 限制 |
+| `container_write_bps_limit` | 0 | 默认写 BPS 限制 |
+
+### 智能限速配置
+
+| 配置项 | 默认值 | 说明 |
+|--------|--------|------|
+| `smart_limit_enabled` | false | 是否启用智能限速 |
+| `smart_limit_monitor_interval` | 60 | 监控间隔（秒） |
+| `smart_limit_history_window` | 10 | 历史数据窗口（分钟） |
+| `smart_limit_high_io_threshold` | 0.8 | 高 IO 阈值 |
+| `smart_limit_auto_iops` | 0 | 自动限速 IOPS 值 |
+| `smart_limit_auto_bps` | 0 | 自动限速 BPS 值 |
+
+### kubelet API 配置
+
+| 配置项 | 默认值 | 说明 |
+|--------|--------|------|
+| `kubelet_host` | localhost | kubelet 主机地址 |
+| `kubelet_port` | 10250 | kubelet 端口 |
+| `smart_limit_use_kubelet_api` | true | 是否使用 kubelet API |
+| `kubelet_skip_verify` | false | 是否跳过证书验证 |
+
+## 架构优势
+
+### 1. 简化复杂度
+- **删除 cgroup 计算**: 移除复杂的 cgroup 文件解析逻辑
+- **统一数据源**: 所有 IO 数据都来自 kubelet API
+- **减少依赖**: 不再需要直接读取 cgroup 文件系统
+
+### 2. 提高可靠性
+- **kubelet API**: 使用官方 API 接口，更加稳定
+- **cAdvisor 集成**: 利用成熟的 cAdvisor 指标系统
+- **错误处理**: 更好的错误处理和回退机制
+
+### 3. 增强性能
+- **减少文件 I/O**: 不再频繁读取 cgroup 文件
+- **优化计算**: 直接使用 cAdvisor 计算的指标
+- **内存效率**: 减少不必要的数据结构
+
+## 监控与调试
+
+### 查看服务日志
+```bash
+# 查看 DaemonSet 日志
+kubectl logs -n kube-system -l app=io-limit-service
+
+# 查看特定节点日志
+kubectl logs -n kube-system -l app=io-limit-service -o wide | grep <node-name>
+```
+
+### 检查 cgroup 限速
+```bash
+# 进入容器查看 cgroup 限制
+docker exec -it <container-id> cat /sys/fs/cgroup/blkio/blkio.throttle.read_iops_device
+docker exec -it <container-id> cat /sys/fs/cgroup/blkio/blkio.throttle.write_iops_device
+```
+
+### 测试 kubelet API
+```bash
+# 测试 kubelet API 连接
+curl -k https://localhost:10250/stats/summary
+
+# 测试 cAdvisor 指标
+curl -k https://localhost:10250/metrics/cadvisor
+```
+
+## 故障排除
+
+### 常见问题
+
+1. **kubelet API 连接失败**
+   - 检查 kubelet 是否运行在 10250 端口
+   - 确认 ServiceAccount 权限
+   - 检查证书配置
+
+2. **cgroup 限速不生效**
+   - 确认 cgroup 版本 (v1/v2)
+   - 检查容器运行时支持
+   - 验证设备 major:minor 号
+
+3. **智能限速不触发**
+   - 检查监控间隔配置
+   - 确认 IO 阈值设置
+   - 查看历史数据收集
+
+## 开发指南
+
+### 项目结构
+```
+├── cmd/                    # 命令行工具
+├── pkg/
+│   ├── cgroup/            # cgroup 限速操作
+│   ├── config/            # 配置管理
+│   ├── container/         # 容器运行时接口
+│   ├── detector/          # 运行时检测
+│   ├── kubeclient/        # Kubernetes 客户端
+│   ├── kubelet/           # kubelet API 客户端
+│   ├── runtime/           # 容器运行时实现
+│   ├── service/           # 主服务逻辑
+│   └── smartlimit/        # 智能限速模块
+├── docs/                  # 文档
+├── examples/              # 示例配置
+└── scripts/               # 部署脚本
+```
+
+### 构建测试
+```bash
+# 运行单元测试
+go test ./...
+
+# 构建二进制文件
+make build
+
+# 运行集成测试
+make test-integration
+```
+
+## 贡献指南
+
+欢迎提交 Issue 和 Pull Request！
+
+1. Fork 项目
+2. 创建功能分支
+3. 提交更改
+4. 推送到分支
+5. 创建 Pull Request
+
+## 许可证
+
+MIT License
+
+## 更新日志
+
+### v2.2.0 (最新)
+- 🚀 **智能限速功能重大升级**: 新增完整的智能限速功能，支持自动监控容器IO使用情况并动态调整限速
+- 📊 **kubelet API集成**: 新增kubelet API客户端，支持通过kubelet API获取容器IO统计信息
+- 🔧 **cAdvisor计算器**: 新增cAdvisor指标计算模块，支持IOPS和BPS趋势分析
+- 📚 **文档完善**: 新增智能限速指南、kubelet API集成文档等完整文档体系
+- 🛠️ **开发工具**: 新增测试工具和脚本，支持高级测试场景
+
+### v2.1.0
+- **注解前缀统一**: 将所有注解前缀从 `iops-limit` 统一变更为 `io-limit`
+- **注解解析优化**: 明确优先级和0值处理逻辑
+- **测试用例修正**: 更新所有相关测试用例，确保测试通过
+- **文档同步更新**: 所有文档中的注解示例全部更新
+
+### v2.0.0
+- 🚀 **架构优化**: 删除 cgroup 计算功能，通过 kubelet API 获取 cAdvisor 数据
+- 🔧 **简化复杂度**: 统一数据源，减少文件 I/O 操作
+- 📈 **提高性能**: 优化内存使用和计算效率
+- 🛡️ **增强可靠性**: 更好的错误处理和回退机制
+
+### v1.x.x
+- 初始版本功能实现
+- 基础 IOPS/BPS 限速
+- 智能限速功能
+- 多运行时支持
 
 ## 文档导航
 
@@ -15,6 +284,8 @@
 - [开发手册（架构、主流程、扩展开发）](./docs/DEV_GUIDE.md)
 - [部署手册（镜像构建、DaemonSet部署、生产实践）](./docs/DEPLOY_GUIDE.md)
 - [变更历史](./docs/CHANGELOG.md)
+- [v2.2.0详细变更日志](./docs/V2.2.0_CHANGELOG_DETAILED.md)
+- [文档更新总结（注解前缀变更详情）](./docs/DOCUMENTATION_UPDATE_SUMMARY.md)
 
 ---
 
@@ -37,7 +308,7 @@
 - **以Pod为主索引**：所有业务逻辑（限速、过滤、注解变更等）均以Pod及其containerStatuses为入口，极大提升性能和准确性。
 - **运行时只做单容器操作**：只在需要底层操作（如cgroup限速）时，用runtime ID查单个容器详细信息，避免全量遍历。
 - **事件监听、注解变更、服务重启等场景全部用Pod+containerStatuses实现**，保证与K8s调度状态强一致。
-- **代码结构清晰**：service层负责业务主流程和过滤，runtime层只负责单容器操作。
+- **代码结构清晰**：service层负责业务主流程和过滤，runtime层只负责单容器底层操作。
 
 ## 架构图
 
@@ -93,15 +364,15 @@ kind: Pod
 metadata:
   name: mypod
   annotations:
-    iops-limit/read-iops: "1200"   # 读IOPS限制
-    iops-limit/write-iops: "800"   # 写IOPS限制
+    io-limit/read-iops: "1200"   # 读IOPS限制
+    io-limit/write-iops: "800"   # 写IOPS限制
     # 或统一设置
-    iops-limit/iops: "1000"        # 读写IOPS都为1000
+    io-limit/iops: "1000"        # 读写IOPS都为1000
     # 智能限速注解（自动添加）
-    iops-limit/smart-limit: "true" # 标识为智能限速
-    iops-limit/auto-iops: "800"    # 自动计算的IOPS值
-    iops-limit/auto-bps: "1048576" # 自动计算的BPS值（1MB/s）
-    iops-limit/limit-reason: "high-io-detected" # 限速原因
+    io-limit/smart-limit: "true" # 标识为智能限速
+    io-limit/auto-iops: "800"    # 自动计算的IOPS值
+    io-limit/auto-bps: "1048576" # 自动计算的BPS值（1MB/s）
+    io-limit/limit-reason: "high-io-detected" # 限速原因
 ```
 
 - 优先级：`read-iops`/`write-iops` > `iops`
@@ -155,7 +426,7 @@ env:
 | `SMART_LIMIT_HIGH_BPS_THRESHOLD` | 0.8 | 智能限速高BPS阈值（字节/秒） |
 | `SMART_LIMIT_AUTO_IOPS` | 0 | 智能限速自动IOPS值（0表示基于当前IO计算） |
 | `SMART_LIMIT_AUTO_BPS` | 0 | 智能限速自动BPS值（0表示基于当前IO计算） |
-| `SMART_LIMIT_ANNOTATION_PREFIX` | iops-limit | 智能限速注解前缀 |
+| `SMART_LIMIT_ANNOTATION_PREFIX` | io-limit | 智能限速注解前缀 |
 | `SMART_LIMIT_USE_KUBELET_API` | false | 是否使用kubelet API获取IO数据 |
 
 #### DaemonSet注入节点名示例：
@@ -168,7 +439,7 @@ env:
 ```
 
 #### IOPS注解优先级说明
-- `iops-limit/read-iops`、`iops-limit/write-iops` 优先于 `iops-limit/iops`
+- `io-limit/read-iops`、`io-limit/write-iops` 优先于 `io-limit/iops`
 - 若都未设置，则用全局环境变量
 - 注解为0表示解除限速
 
@@ -177,7 +448,7 @@ env:
 1. 构建镜像并推送到仓库
 2. 修改 DaemonSet YAML，配置镜像和环境变量
 3. 部署到集群：`kubectl apply -f k8s-daemonset.yaml`
-4. 查看日志：`kubectl logs -n kube-system -l app=iops-limit-service -f`
+4. 查看日志：`kubectl logs -n kube-system -l app=io-limit-service -f`
 
 #### 智能限速配置示例：
 
@@ -217,8 +488,8 @@ env:
 2. 安装依赖：`go mod download`
 3. 配置本地环境变量（可参考上文）
 4. 运行服务：`go run main.go`
-5. 构建二进制：`go build -o iops-limit-service main.go`
-6. 构建镜像：`docker build -t your-repo/iops-limit-service:latest .`
+5. 构建二进制：`go build -o io-limit-service main.go`
+6. 构建镜像：`docker build -t your-repo/io-limit-service:latest .`
 
 ### 2. 单元测试
 - 运行所有测试：
