@@ -64,6 +64,12 @@ type Config struct {
 	SmartLimitRemoveThreshold     float64 `json:"smart_limit_remove_threshold"`      // 解除限速阈值（相对值）
 	SmartLimitRemoveDelay         int     `json:"smart_limit_remove_delay"`          // 解除限速延迟（分钟）
 	SmartLimitRemoveCheckInterval int     `json:"smart_limit_remove_check_interval"` // 解除限速检查间隔（分钟）
+
+	// 新增全局默认和最大限额配置
+	DefaultIOPSLimit int `yaml:"default_iops_limit" json:"default_iops_limit"`
+	DefaultBPSLimit  int `yaml:"default_bps_limit" json:"default_bps_limit"`
+	MaxIOPSLimit     int `yaml:"max_iops_limit" json:"max_iops_limit"`
+	MaxBPSLimit      int `yaml:"max_bps_limit" json:"max_bps_limit"`
 }
 
 // GetDefaultConfig 获取默认配置
@@ -113,6 +119,10 @@ func GetDefaultConfig() *Config {
 		SmartLimitRemoveThreshold:     0.5,
 		SmartLimitRemoveDelay:         5,
 		SmartLimitRemoveCheckInterval: 1,
+		DefaultIOPSLimit:              500,
+		DefaultBPSLimit:               10 * 1024 * 1024, // 10MB
+		MaxIOPSLimit:                  2000,
+		MaxBPSLimit:                   100 * 1024 * 1024, // 100MB
 	}
 }
 

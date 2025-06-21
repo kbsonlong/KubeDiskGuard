@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"KubeDiskGuard/pkg/annotationkeys"
 	"KubeDiskGuard/pkg/cgroup"
 	"KubeDiskGuard/pkg/config"
 	"KubeDiskGuard/pkg/container"
@@ -20,25 +21,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/watch"
-)
-
-const (
-	// Smart limit annotation keys
-	RemovedAnnotationKey   = "limit-removed"
-	IopsAnnotationKey      = "iops-limit"
-	ReadIopsAnnotationKey  = "read-iops-limit"
-	WriteIopsAnnotationKey = "write-iops-limit"
-	BpsAnnotationKey       = "bps-limit"
-	ReadBpsAnnotationKey   = "read-bps-limit"
-	WriteBpsAnnotationKey  = "write-bps-limit"
-
-	// Legacy nvme annotation keys
-	LegacyIopsAnnotationKey      = "nvme-iops-limit"
-	LegacyReadIopsAnnotationKey  = "nvme-iops-read-limit"
-	LegacyWriteIopsAnnotationKey = "nvme-iops-write-limit"
-	LegacyBpsAnnotationKey       = "nvme-bps-limit"
-	LegacyReadBpsAnnotationKey   = "nvme-bps-read-limit"
-	LegacyWriteBpsAnnotationKey  = "nvme-bps-write-limit"
 )
 
 // KubeDiskGuardService 节点级磁盘IO资源守护与限速服务
@@ -303,8 +285,8 @@ func NewKubeDiskGuardServiceWithKubeClient(cfg *config.Config, kc kubeclient.IKu
 func hasSmartLimitAnnotation(annotations map[string]string, prefix string) bool {
 	annotationPrefix := prefix + "/"
 	smartKeys := []string{
-		IopsAnnotationKey, ReadIopsAnnotationKey, WriteIopsAnnotationKey,
-		BpsAnnotationKey, ReadBpsAnnotationKey, WriteBpsAnnotationKey,
+		annotationkeys.IopsAnnotationKey, annotationkeys.ReadIopsAnnotationKey, annotationkeys.WriteIopsAnnotationKey,
+		annotationkeys.BpsAnnotationKey, annotationkeys.ReadBpsAnnotationKey, annotationkeys.WriteBpsAnnotationKey,
 	}
 	for _, key := range smartKeys {
 		if _, ok := annotations[annotationPrefix+key]; ok {
@@ -318,24 +300,24 @@ func ParseIopsLimitFromAnnotations(annotations map[string]string, defaultReadIop
 	readIops, writeIops := defaultReadIops, defaultWriteIops
 	annotationPrefix := prefix + "/"
 
-	if val, ok := annotations[annotationPrefix+RemovedAnnotationKey]; ok && val == "true" {
+	if val, ok := annotations[annotationPrefix+annotationkeys.RemovedAnnotationKey]; ok && val == "true" {
 		return 0, 0
 	}
 
 	useSmart := hasSmartLimitAnnotation(annotations, prefix)
 
 	if useSmart {
-		if iops, ok := annotations[annotationPrefix+IopsAnnotationKey]; ok {
+		if iops, ok := annotations[annotationPrefix+annotationkeys.IopsAnnotationKey]; ok {
 			if value, err := strconv.Atoi(iops); err == nil {
 				return value, value
 			}
 		}
-		if riops, ok := annotations[annotationPrefix+ReadIopsAnnotationKey]; ok {
+		if riops, ok := annotations[annotationPrefix+annotationkeys.ReadIopsAnnotationKey]; ok {
 			if value, err := strconv.Atoi(riops); err == nil {
 				readIops = value
 			}
 		}
-		if wiops, ok := annotations[annotationPrefix+WriteIopsAnnotationKey]; ok {
+		if wiops, ok := annotations[annotationPrefix+annotationkeys.WriteIopsAnnotationKey]; ok {
 			if value, err := strconv.Atoi(wiops); err == nil {
 				writeIops = value
 			}
@@ -344,17 +326,17 @@ func ParseIopsLimitFromAnnotations(annotations map[string]string, defaultReadIop
 	}
 
 	// Fallback to legacy only if no smart limit annotations are present
-	if iops, ok := annotations[LegacyIopsAnnotationKey]; ok {
+	if iops, ok := annotations[annotationkeys.LegacyIopsAnnotationKey]; ok {
 		if value, err := strconv.Atoi(iops); err == nil {
 			return value, value
 		}
 	}
-	if riops, ok := annotations[LegacyReadIopsAnnotationKey]; ok {
+	if riops, ok := annotations[annotationkeys.LegacyReadIopsAnnotationKey]; ok {
 		if value, err := strconv.Atoi(riops); err == nil {
 			readIops = value
 		}
 	}
-	if wiops, ok := annotations[LegacyWriteIopsAnnotationKey]; ok {
+	if wiops, ok := annotations[annotationkeys.LegacyWriteIopsAnnotationKey]; ok {
 		if value, err := strconv.Atoi(wiops); err == nil {
 			writeIops = value
 		}
@@ -367,24 +349,24 @@ func ParseBpsLimitFromAnnotations(annotations map[string]string, defaultReadBps,
 	readBps, writeBps := defaultReadBps, defaultWriteBps
 	annotationPrefix := prefix + "/"
 
-	if val, ok := annotations[annotationPrefix+RemovedAnnotationKey]; ok && val == "true" {
+	if val, ok := annotations[annotationPrefix+annotationkeys.RemovedAnnotationKey]; ok && val == "true" {
 		return 0, 0
 	}
 
 	useSmart := hasSmartLimitAnnotation(annotations, prefix)
 
 	if useSmart {
-		if bps, ok := annotations[annotationPrefix+BpsAnnotationKey]; ok {
+		if bps, ok := annotations[annotationPrefix+annotationkeys.BpsAnnotationKey]; ok {
 			if value, err := units.RAMInBytes(bps); err == nil {
 				return int(value), int(value)
 			}
 		}
-		if rbps, ok := annotations[annotationPrefix+ReadBpsAnnotationKey]; ok {
+		if rbps, ok := annotations[annotationPrefix+annotationkeys.ReadBpsAnnotationKey]; ok {
 			if value, err := units.RAMInBytes(rbps); err == nil {
 				readBps = int(value)
 			}
 		}
-		if wbps, ok := annotations[annotationPrefix+WriteBpsAnnotationKey]; ok {
+		if wbps, ok := annotations[annotationPrefix+annotationkeys.WriteBpsAnnotationKey]; ok {
 			if value, err := units.RAMInBytes(wbps); err == nil {
 				writeBps = int(value)
 			}
@@ -393,17 +375,17 @@ func ParseBpsLimitFromAnnotations(annotations map[string]string, defaultReadBps,
 	}
 
 	// Fallback to legacy only if no smart limit annotations are present
-	if bps, ok := annotations[LegacyBpsAnnotationKey]; ok {
+	if bps, ok := annotations[annotationkeys.LegacyBpsAnnotationKey]; ok {
 		if value, err := units.RAMInBytes(bps); err == nil {
 			return int(value), int(value)
 		}
 	}
-	if rbps, ok := annotations[LegacyReadBpsAnnotationKey]; ok {
+	if rbps, ok := annotations[annotationkeys.LegacyReadBpsAnnotationKey]; ok {
 		if value, err := units.RAMInBytes(rbps); err == nil {
 			readBps = int(value)
 		}
 	}
-	if wbps, ok := annotations[LegacyWriteBpsAnnotationKey]; ok {
+	if wbps, ok := annotations[annotationkeys.LegacyWriteBpsAnnotationKey]; ok {
 		if value, err := units.RAMInBytes(wbps); err == nil {
 			writeBps = int(value)
 		}

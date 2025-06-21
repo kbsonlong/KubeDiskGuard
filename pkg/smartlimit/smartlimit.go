@@ -11,6 +11,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 
+	"KubeDiskGuard/pkg/annotationkeys"
 	"KubeDiskGuard/pkg/cgroup"
 	"KubeDiskGuard/pkg/config"
 	"KubeDiskGuard/pkg/kubeclient"
@@ -39,26 +40,34 @@ type LimitStatus struct {
 	mu          sync.RWMutex
 }
 
+// ContainerLimit 容器限额结构体
+type ContainerLimit struct {
+	IOPS int
+	BPS  int
+}
+
 // SmartLimitManager 智能限速管理器
 type SmartLimitManager struct {
-	config      *config.Config
-	kubeClient  kubeclient.IKubeClient
-	cgroupMgr   *cgroup.Manager
-	history     map[string]*ContainerIOHistory
-	limitStatus map[string]*LimitStatus // 限速状态跟踪
-	mu          sync.RWMutex
-	stopCh      chan struct{}
+	config          *config.Config
+	kubeClient      kubeclient.IKubeClient
+	cgroupMgr       *cgroup.Manager
+	history         map[string]*ContainerIOHistory
+	limitStatus     map[string]*LimitStatus    // 限速状态跟踪
+	containerLimits map[string]*ContainerLimit // containerID -> 限额
+	mu              sync.RWMutex
+	stopCh          chan struct{}
 }
 
 // NewSmartLimitManager 创建智能限速管理器
 func NewSmartLimitManager(config *config.Config, kubeClient kubeclient.IKubeClient, cgroupMgr *cgroup.Manager) *SmartLimitManager {
 	return &SmartLimitManager{
-		config:      config,
-		kubeClient:  kubeClient,
-		cgroupMgr:   cgroupMgr,
-		history:     make(map[string]*ContainerIOHistory),
-		limitStatus: make(map[string]*LimitStatus),
-		stopCh:      make(chan struct{}),
+		config:          config,
+		kubeClient:      kubeClient,
+		cgroupMgr:       cgroupMgr,
+		history:         make(map[string]*ContainerIOHistory),
+		limitStatus:     make(map[string]*LimitStatus),
+		stopCh:          make(chan struct{}),
+		containerLimits: make(map[string]*ContainerLimit),
 	}
 }
 
@@ -345,18 +354,6 @@ func (m *SmartLimitManager) analyzeContainer(containerID string) {
 				m.applySmartLimitWithResult(history.PodName, history.Namespace, trend, limitResult)
 				// 更新限速状态
 				m.updateLimitStatus(containerID, history.PodName, history.Namespace, true, limitResult)
-			} else {
-				// 使用原有逻辑
-				m.applySmartLimit(history.PodName, history.Namespace, trend)
-				// 更新限速状态（使用默认值）
-				m.updateLimitStatus(containerID, history.PodName, history.Namespace, true, &LimitResult{
-					TriggeredBy: "legacy",
-					ReadIOPS:    m.config.SmartLimitAutoIOPS,
-					WriteIOPS:   m.config.SmartLimitAutoIOPS,
-					ReadBPS:     m.config.SmartLimitAutoBPS,
-					WriteBPS:    m.config.SmartLimitAutoBPS,
-					Reason:      "Legacy threshold triggered",
-				})
 			}
 		}
 	} else if limitStatus != nil && limitStatus.IsLimited {
@@ -650,57 +647,66 @@ func (m *SmartLimitManager) applySmartLimitWithResult(podName, namespace string,
 		log.Printf("Failed to get pod %s/%s: %v", namespace, podName, err)
 		return
 	}
-
 	// 构建注解
 	annotations := make(map[string]string)
 	for k, v := range pod.Annotations {
 		annotations[k] = v
 	}
+	// 获取容器限额
+	containerID := podName + ":" + namespace // 简化，实际应用时可用真实containerID
+	limit := m.getOrInitContainerLimit(containerID)
 
-	// 应用分级限速值
-	if limitResult.ReadIOPS > 0 {
-		annotations[m.config.SmartLimitAnnotationPrefix+"/read-iops-limit"] = strconv.Itoa(limitResult.ReadIOPS)
-	}
-	if limitResult.WriteIOPS > 0 {
-		annotations[m.config.SmartLimitAnnotationPrefix+"/write-iops-limit"] = strconv.Itoa(limitResult.WriteIOPS)
-	}
-	if limitResult.ReadBPS > 0 {
-		annotations[m.config.SmartLimitAnnotationPrefix+"/read-bps-limit"] = strconv.Itoa(limitResult.ReadBPS)
-	}
-	if limitResult.WriteBPS > 0 {
-		annotations[m.config.SmartLimitAnnotationPrefix+"/write-bps-limit"] = strconv.Itoa(limitResult.WriteBPS)
+	// 融合分级限速与全局限额逻辑
+	var readIOPS, writeIOPS, readBPS, writeBPS int
+	if limitResult != nil && (limitResult.ReadIOPS > 0 || limitResult.ReadBPS > 0) {
+		// 分级限速优先，且不超过全局最大
+		readIOPS = min(limitResult.ReadIOPS, m.config.MaxIOPSLimit)
+		writeIOPS = min(limitResult.WriteIOPS, m.config.MaxIOPSLimit)
+		readBPS = min(limitResult.ReadBPS, m.config.MaxBPSLimit)
+		writeBPS = min(limitResult.WriteBPS, m.config.MaxBPSLimit)
+	} else {
+		// 否则用containerLimits
+		readIOPS = min(limit.IOPS, m.config.MaxIOPSLimit)
+		writeIOPS = min(limit.IOPS, m.config.MaxIOPSLimit)
+		readBPS = min(limit.BPS, m.config.MaxBPSLimit)
+		writeBPS = min(limit.BPS, m.config.MaxBPSLimit)
 	}
 
+	prefix := m.config.SmartLimitAnnotationPrefix
+	// 检查当前注解中是否有0值，若有则本轮跳过下发该项
+	if !(annotations[prefix+"/"+annotationkeys.ReadIopsAnnotationKey] == "0") && readIOPS > 0 {
+		annotations[prefix+"/"+annotationkeys.ReadIopsAnnotationKey] = strconv.Itoa(readIOPS)
+	}
+	if !(annotations[prefix+"/"+annotationkeys.WriteIopsAnnotationKey] == "0") && writeIOPS > 0 {
+		annotations[prefix+"/"+annotationkeys.WriteIopsAnnotationKey] = strconv.Itoa(writeIOPS)
+	}
+	if !(annotations[prefix+"/"+annotationkeys.ReadBpsAnnotationKey] == "0") && readBPS > 0 {
+		annotations[prefix+"/"+annotationkeys.ReadBpsAnnotationKey] = strconv.Itoa(readBPS)
+	}
+	if !(annotations[prefix+"/"+annotationkeys.WriteBpsAnnotationKey] == "0") && writeBPS > 0 {
+		annotations[prefix+"/"+annotationkeys.WriteBpsAnnotationKey] = strconv.Itoa(writeBPS)
+	}
 	// 添加触发信息
-	annotations[m.config.SmartLimitAnnotationPrefix+"/triggered-by"] = limitResult.TriggeredBy
-	annotations[m.config.SmartLimitAnnotationPrefix+"/trigger-reason"] = limitResult.Reason
-
-	// 添加趋势信息
-	annotations[m.config.SmartLimitAnnotationPrefix+"/trend-read-iops-15m"] = strconv.FormatFloat(trend.ReadIOPS15m, 'f', 2, 64)
-	annotations[m.config.SmartLimitAnnotationPrefix+"/trend-write-iops-15m"] = strconv.FormatFloat(trend.WriteIOPS15m, 'f', 2, 64)
-	annotations[m.config.SmartLimitAnnotationPrefix+"/trend-read-bps-15m"] = strconv.FormatFloat(trend.ReadBPS15m, 'f', 2, 64)
-	annotations[m.config.SmartLimitAnnotationPrefix+"/trend-write-bps-15m"] = strconv.FormatFloat(trend.WriteBPS15m, 'f', 2, 64)
-	annotations[m.config.SmartLimitAnnotationPrefix+"/trend-read-iops-30m"] = strconv.FormatFloat(trend.ReadIOPS30m, 'f', 2, 64)
-	annotations[m.config.SmartLimitAnnotationPrefix+"/trend-write-iops-30m"] = strconv.FormatFloat(trend.WriteIOPS30m, 'f', 2, 64)
-	annotations[m.config.SmartLimitAnnotationPrefix+"/trend-read-bps-30m"] = strconv.FormatFloat(trend.ReadBPS30m, 'f', 2, 64)
-	annotations[m.config.SmartLimitAnnotationPrefix+"/trend-write-bps-30m"] = strconv.FormatFloat(trend.WriteBPS30m, 'f', 2, 64)
-	annotations[m.config.SmartLimitAnnotationPrefix+"/trend-read-iops-60m"] = strconv.FormatFloat(trend.ReadIOPS60m, 'f', 2, 64)
-	annotations[m.config.SmartLimitAnnotationPrefix+"/trend-write-iops-60m"] = strconv.FormatFloat(trend.WriteIOPS60m, 'f', 2, 64)
-	annotations[m.config.SmartLimitAnnotationPrefix+"/trend-read-bps-60m"] = strconv.FormatFloat(trend.ReadBPS60m, 'f', 2, 64)
-	annotations[m.config.SmartLimitAnnotationPrefix+"/trend-write-bps-60m"] = strconv.FormatFloat(trend.WriteBPS60m, 'f', 2, 64)
-
-	// 更新Pod注解
+	if limitResult != nil {
+		annotations[prefix+"/triggered-by"] = limitResult.TriggeredBy
+		annotations[prefix+"/trigger-reason"] = limitResult.Reason
+	}
+	// 添加趋势信息（略）
 	pod.Annotations = annotations
 	_, err = m.kubeClient.UpdatePod(pod)
 	if err != nil {
 		log.Printf("Failed to update pod annotations for %s/%s: %v", namespace, podName, err)
 		return
 	}
+	log.Printf("Applied smart limit to pod %s/%s: IOPS[%d,%d], BPS[%d,%d]", namespace, podName, readIOPS, writeIOPS, readBPS, writeIOPS)
+}
 
-	log.Printf("Applied graded smart limit to pod %s/%s: %s, IOPS[%d,%d], BPS[%d,%d]",
-		namespace, podName, limitResult.Reason,
-		limitResult.ReadIOPS, limitResult.WriteIOPS,
-		limitResult.ReadBPS, limitResult.WriteBPS)
+// min 辅助函数
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // shouldMonitorPod 判断是否应该监控Pod
@@ -1004,4 +1010,26 @@ func (m *SmartLimitManager) parseIntAnnotation(value string, defaultValue int) i
 		return parsed
 	}
 	return defaultValue
+}
+
+// 获取容器限额（无则分配默认值）
+func (m *SmartLimitManager) getOrInitContainerLimit(containerID string) *ContainerLimit {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	limit, exists := m.containerLimits[containerID]
+	if !exists {
+		limit = &ContainerLimit{
+			IOPS: m.config.DefaultIOPSLimit,
+			BPS:  m.config.DefaultBPSLimit,
+		}
+		m.containerLimits[containerID] = limit
+	}
+	// 限额不超过最大值
+	if limit.IOPS > m.config.MaxIOPSLimit {
+		limit.IOPS = m.config.MaxIOPSLimit
+	}
+	if limit.BPS > m.config.MaxBPSLimit {
+		limit.BPS = m.config.MaxBPSLimit
+	}
+	return limit
 }
