@@ -1,12 +1,17 @@
 # 变量定义
-IMAGE_NAME ?= io-limit-service
-IMAGE_TAG ?= latest
+IMAGE_NAME ?= kubediskguard
+VERSION ?= 1.0.0
+GIT_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo 'unknown')
+BUILD_TIME := $(shell date +%Y-%m-%dT%H:%M:%S)
+VERSION_FULL := $(VERSION)-$(GIT_COMMIT)
+IMAGE_TAG ?= $(VERSION_FULL)
 REGISTRY ?= registry.kbsonlong.com
 FULL_IMAGE_NAME = $(REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG)
 
 # Go 相关变量
-BINARY_NAME = io-limit-service
+BINARY_NAME = kubediskguard
 MAIN_FILE = main.go
+LDFLAGS = -X 'main.Version=$(VERSION_FULL)' -X 'main.GitCommit=$(GIT_COMMIT)' -X 'main.BuildTime=$(BUILD_TIME)'
 
 # 默认目标
 .PHONY: help
@@ -17,21 +22,21 @@ help: ## 显示帮助信息
 .PHONY: build
 build: ## 构建 Go 二进制文件
 	@echo "构建二进制文件..."
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -installsuffix cgo -o $(BINARY_NAME) $(MAIN_FILE)
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -installsuffix cgo -ldflags "$(LDFLAGS)" -o $(BINARY_NAME) $(MAIN_FILE)
 
 .PHONY: build-local
 build-local: ## 构建本地二进制文件
 	@echo "构建本地二进制文件..."
-	go build -o $(BINARY_NAME) $(MAIN_FILE)
+	go build -ldflags "$(LDFLAGS)" -o $(BINARY_NAME) $(MAIN_FILE)
 
 .PHONY: build-multiarch
 build-multiarch: ## 多架构本地编译
 	@echo "多架构本地编译..."
-	GOOS=linux GOARCH=amd64 go build -o io-limit-service-amd64 main.go
-	GOOS=linux GOARCH=arm64 go build -o io-limit-service-arm64 main.go
+	GOOS=linux GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o kubediskguard-amd64 main.go
+	GOOS=linux GOARCH=arm64 go build -ldflags "$(LDFLAGS)" -o kubediskguard-arm64 main.go
 
 .PHONY: docker-build
-docker-build: ## 构建 Docker 镜像
+docker-build: build ## 构建 Docker 镜像（自动带版本二进制）
 	@echo "构建 Docker 镜像: $(FULL_IMAGE_NAME)"
 	docker build -t $(FULL_IMAGE_NAME) .
 
@@ -44,9 +49,9 @@ docker-push: ## 推送 Docker 镜像到仓库
 docker-build-push: docker-build docker-push ## 构建并推送 Docker 镜像
 
 .PHONY: docker-buildx
-docker-buildx: ## 多架构Docker镜像构建
+docker-buildx: build-multiarch ## 多架构Docker镜像构建
 	@echo "使用buildx构建多架构镜像..."
-	docker buildx build --platform linux/amd64,linux/arm64 -t $(FULL_IMAGE_NAME) --push .
+	docker buildx build --platform linux/amd64,linux/arm64 --build-arg VERSION=Version=$(VERSION_FULL) --build-arg GitCommit=$(GIT_COMMIT) --build-arg BuildTime=$(BUILD_TIME) -t $(FULL_IMAGE_NAME)-amd64 --push .
 
 .PHONY: run
 run: build-local ## 本地运行服务
