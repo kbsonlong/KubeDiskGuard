@@ -76,7 +76,7 @@ run-docker: ## 在 Docker 中运行服务
 .PHONY: deploy
 deploy: ## 部署到 Kubernetes
 	@echo "部署到 Kubernetes..."
-	@sed 's|your-registry/iops-limit-service:latest|$(FULL_IMAGE_NAME)|g' k8s-daemonset.yaml | kubectl apply -f -
+	@sed 's|your-registry/io-limit-service:latest|$(FULL_IMAGE_NAME)|g' k8s-daemonset.yaml | kubectl apply -f -
 
 .PHONY: undeploy
 undeploy: ## 从 Kubernetes 卸载
@@ -86,15 +86,15 @@ undeploy: ## 从 Kubernetes 卸载
 .PHONY: logs
 logs: ## 查看服务日志
 	@echo "查看服务日志..."
-	kubectl logs -n kube-system -l app=iops-limit-service -f
+	kubectl logs -n kube-system -l app=io-limit-service -f
 
 .PHONY: status
 status: ## 查看服务状态
 	@echo "查看 DaemonSet 状态..."
-	kubectl get daemonset -n kube-system iops-limit-service
+	kubectl get daemonset -n kube-system io-limit-service
 	@echo ""
 	@echo "查看 Pod 状态..."
-	kubectl get pods -n kube-system -l app=iops-limit-service
+	kubectl get pods -n kube-system -l app=io-limit-service
 
 .PHONY: test
 test: ## 运行测试

@@ -1,0 +1,110 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: iops-limit-config
+  namespace: default
+data:
+  config.json: |
+    {
+      "smart_limit_enabled": true,
+      "smart_limit_graded_thresholds": true,
+      "smart_limit_monitor_interval": 60,
+      "smart_limit_history_window": 120,
+      "smart_limit_annotation_prefix": "io-limit",
+      
+      # 15分钟窗口配置 - 短期高IO，快速响应
+      "smart_limit_io_threshold_15m": 0.6,
+      "smart_limit_bps_threshold_15m": 0.6,
+      "smart_limit_iops_limit_15m": 300,
+      "smart_limit_bps_limit_15m": 50000000,
+      
+      # 30分钟窗口配置 - 中期高IO，中等限速
+      "smart_limit_io_threshold_30m": 0.7,
+      "smart_limit_bps_threshold_30m": 0.7,
+      "smart_limit_iops_limit_30m": 400,
+      "smart_limit_bps_limit_30m": 60000000,
+      
+      # 60分钟窗口配置 - 长期高IO，轻度限速
+      "smart_limit_io_threshold_60m": 0.8,
+      "smart_limit_bps_threshold_60m": 0.8,
+      "smart_limit_iops_limit_60m": 450,
+      "smart_limit_bps_limit_60m": 70000000,
+      
+      # 解除限速配置
+      "smart_limit_remove_threshold": 0.5,
+      "smart_limit_remove_delay": 5,
+      "smart_limit_remove_check_interval": 1,
+      
+      "exclude_namespaces": ["kube-system", "monitoring"],
+      "exclude_keywords": ["pause", "istio-proxy", "psmdb"]
+    }
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: iops-limit-daemon
+  namespace: default
+spec:
+  selector:
+    matchLabels:
+      app: iops-limit
+  template:
+    metadata:
+      labels:
+        app: iops-limit
+    spec:
+      containers:
+      - name: iops-limit
+        image: iops-limit-service:latest
+        env:
+        - name: SMART_LIMIT_ENABLED
+          value: "true"
+        - name: SMART_LIMIT_GRADED_THRESHOLDS
+          value: "true"
+        - name: SMART_LIMIT_MONITOR_INTERVAL
+          value: "60"
+        - name: SMART_LIMIT_HISTORY_WINDOW
+          value: "120"
+        # 15分钟窗口
+        - name: SMART_LIMIT_IO_THRESHOLD_15M
+          value: "0.6"
+        - name: SMART_LIMIT_BPS_THRESHOLD_15M
+          value: "0.6"
+        - name: SMART_LIMIT_IOPS_LIMIT_15M
+          value: "300"
+        - name: SMART_LIMIT_BPS_LIMIT_15M
+          value: "50000000"
+        # 30分钟窗口
+        - name: SMART_LIMIT_IO_THRESHOLD_30M
+          value: "0.7"
+        - name: SMART_LIMIT_BPS_THRESHOLD_30M
+          value: "0.7"
+        - name: SMART_LIMIT_IOPS_LIMIT_30M
+          value: "400"
+        - name: SMART_LIMIT_BPS_LIMIT_30M
+          value: "60000000"
+        # 60分钟窗口
+        - name: SMART_LIMIT_IO_THRESHOLD_60M
+          value: "0.8"
+        - name: SMART_LIMIT_BPS_THRESHOLD_60M
+          value: "0.8"
+        - name: SMART_LIMIT_IOPS_LIMIT_60M
+          value: "450"
+        - name: SMART_LIMIT_BPS_LIMIT_60M
+          value: "70000000"
+        # 解除限速配置
+        - name: SMART_LIMIT_REMOVE_THRESHOLD
+          value: "0.5"
+        - name: SMART_LIMIT_REMOVE_DELAY
+          value: "5"
+        - name: SMART_LIMIT_REMOVE_CHECK_INTERVAL
+          value: "1"
+        volumeMounts:
+        - name: config
+          mountPath: /etc/iops-limit
+        securityContext:
+          privileged: true
+      volumes:
+      - name: config
+        configMap:
+          name: iops-limit-config 

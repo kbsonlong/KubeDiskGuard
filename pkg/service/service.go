@@ -5,13 +5,18 @@ import (
 	"log"
 	"os"
 	"reflect"
+	"strconv"
+	"strings"
 
+	"KubeDiskGuard/pkg/annotationkeys"
+	"KubeDiskGuard/pkg/cgroup"
 	"KubeDiskGuard/pkg/config"
 	"KubeDiskGuard/pkg/container"
 	"KubeDiskGuard/pkg/detector"
 	"KubeDiskGuard/pkg/kubeclient"
 	"KubeDiskGuard/pkg/runtime"
-
+	"KubeDiskGuard/pkg/smartlimit"
+	"github.com/docker/go-units"
 	"github.com/prometheus/client_golang/prometheus"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -47,92 +52,74 @@ func init() {
 
 // KubeDiskGuardService 节点级磁盘IO资源守护与限速服务
 type KubeDiskGuardService struct {
-	config     *config.Config
+	Config     *config.Config
 	runtime    container.Runtime
 	kubeClient kubeclient.IKubeClient
+	smartLimit *smartlimit.SmartLimitManager
 }
 
 // NewKubeDiskGuardService 创建KubeDiskGuardService
-func NewKubeDiskGuardService(config *config.Config) (*KubeDiskGuardService, error) {
+func NewKubeDiskGuardService(cfg *config.Config) (*KubeDiskGuardService, error) {
 	service := &KubeDiskGuardService{
-		config: config,
+		Config: cfg,
 	}
 
-	// 自动检测运行时
-	if config.ContainerRuntime == "auto" {
-		config.ContainerRuntime = detector.DetectRuntime()
+	if cfg.ContainerRuntime == "auto" {
+		cfg.ContainerRuntime = detector.DetectRuntime()
+	}
+	if cfg.CgroupVersion == "auto" {
+		cfg.CgroupVersion = detector.DetectCgroupVersion()
 	}
 
-	// 自动检测cgroup版本
-	if config.CgroupVersion == "auto" {
-		config.CgroupVersion = detector.DetectCgroupVersion()
-	}
+	log.Printf("Using container runtime: %s", cfg.ContainerRuntime)
+	log.Printf("Detected cgroup version: %s", cfg.CgroupVersion)
 
-	log.Printf("Using container runtime: %s", config.ContainerRuntime)
-	log.Printf("Detected cgroup version: %s", config.CgroupVersion)
-
-	// 初始化运行时
 	var err error
-	switch config.ContainerRuntime {
+	switch cfg.ContainerRuntime {
 	case "docker":
-		service.runtime, err = runtime.NewDockerRuntime(config)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create docker runtime: %v", err)
-		}
+		service.runtime, err = runtime.NewDockerRuntime(cfg)
 	case "containerd":
-		service.runtime, err = runtime.NewContainerdRuntime(config)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create containerd runtime: %v", err)
-		}
+		service.runtime, err = runtime.NewContainerdRuntime(cfg)
 	default:
-		return nil, fmt.Errorf("unsupported container runtime: %s", config.ContainerRuntime)
+		return nil, fmt.Errorf("unsupported container runtime: %s", cfg.ContainerRuntime)
+	}
+	if err != nil {
+		return nil, err
 	}
 
-	// 初始化kubeClient
 	nodeName := os.Getenv("NODE_NAME")
 	if nodeName == "" {
 		return nil, fmt.Errorf("NODE_NAME env is required")
 	}
-	service.kubeClient, err = kubeclient.NewKubeClient(nodeName, config.KubeConfigPath)
+	kubeClient, err := kubeclient.NewKubeClient(nodeName, cfg.KubeConfigPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create kubeclient: %v", err)
+	}
+	service.kubeClient = kubeClient
+
+	if cfg.SmartLimitEnabled {
+		cgroupMgr := cgroup.NewManager(cfg.CgroupVersion)
+		service.smartLimit = smartlimit.NewSmartLimitManager(cfg, service.kubeClient, cgroupMgr)
+		log.Printf("Smart limit manager initialized")
 	}
 
 	return service, nil
 }
 
-// ShouldSkipContainer 只做关键字过滤
 func (s *KubeDiskGuardService) ShouldSkipContainer(image, name string) bool {
-	for _, keyword := range s.config.ExcludeKeywords {
-		if contains(image, keyword) || contains(name, keyword) {
+	for _, keyword := range s.Config.ExcludeKeywords {
+		if strings.Contains(image, keyword) || strings.Contains(name, keyword) {
 			return true
 		}
 	}
 	return false
 }
 
-// contains 检查字符串是否包含子字符串
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr ||
-		(len(s) > len(substr) && (s[:len(substr)] == substr ||
-			s[len(s)-len(substr):] == substr ||
-			containsSubstring(s, substr))))
-}
-
-// containsSubstring 检查字符串中间是否包含子字符串
-func containsSubstring(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
-}
-
-// processPodContainers 处理单个Pod下所有容器的IOPS/BPS限速（支持读写分开）
 func (s *KubeDiskGuardService) processPodContainers(pod corev1.Pod) {
-	readIopsVal, writeIopsVal := ParseIopsLimitFromAnnotations(pod.Annotations, s.config.ContainerReadIOPSLimit, s.config.ContainerWriteIOPSLimit)
-	readBps, writeBps := ParseBpsLimitFromAnnotations(pod.Annotations, s.config.ContainerReadBPSLimit, s.config.ContainerWriteBPSLimit)
+	prefix := s.Config.SmartLimitAnnotationPrefix
+	readIopsVal, writeIopsVal := ParseIopsLimitFromAnnotations(pod.Annotations, s.Config.ContainerReadIOPSLimit, s.Config.ContainerWriteIOPSLimit, prefix)
+	readBps, writeBps := ParseBpsLimitFromAnnotations(pod.Annotations, s.Config.ContainerReadBPSLimit, s.Config.ContainerWriteBPSLimit, prefix)
+
 	for _, cs := range pod.Status.ContainerStatuses {
 		containerID := parseRuntimeID(cs.ContainerID)
 		if containerID == "" {
@@ -145,59 +132,59 @@ func (s *KubeDiskGuardService) processPodContainers(pod corev1.Pod) {
 			containerFail.Inc()
 			continue
 		}
+
 		if s.ShouldSkipContainer(containerInfo.Image, containerInfo.Name) {
 			log.Printf("Skip IOPS/BPS limit for container %s (excluded by keyword)", containerInfo.ID)
 			containerSkip.Inc()
 			continue
 		}
-		// 判断是否需要解除限速
+
 		if readIopsVal == 0 && writeIopsVal == 0 && readBps == 0 && writeBps == 0 {
 			if err := s.runtime.ResetLimits(containerInfo); err != nil {
 				log.Printf("Failed to reset all limits for container %s: %v", containerInfo.ID, err)
 				containerFail.Inc()
 			} else {
+				log.Printf("Successfully reset all limits for container %s", containerInfo.ID)
 				log.Printf("Reset all limits for container %s (pod: %s/%s)", containerInfo.ID, pod.Namespace, pod.Name)
 				containerReset.Inc()
 			}
 			continue
 		}
-		// 一次性下发所有限速项
+
 		if err := s.runtime.SetLimits(containerInfo, readIopsVal, writeIopsVal, readBps, writeBps); err != nil {
 			log.Printf("Failed to set limits for container %s: %v", containerInfo.ID, err)
 			containerFail.Inc()
 		} else {
+			log.Printf("Successfully set limits for container %s: riops=%d, wiops=%d, rbps=%d, wbps=%d", containerInfo.ID, readIopsVal, writeIopsVal, readBps, writeBps)
 			log.Printf("Applied limits for container %s (pod: %s/%s): riops=%d wiops=%d rbps=%d wbps=%d", containerInfo.ID, pod.Namespace, pod.Name, readIopsVal, writeIopsVal, readBps, writeBps)
 			containerSuccess.Inc()
-		}
+    }
 	}
 }
 
-// ShouldProcessPod 判断Pod是否需要处理（命名空间、labelSelector过滤）
 func (s *KubeDiskGuardService) ShouldProcessPod(pod corev1.Pod) bool {
 	if pod.Status.Phase != corev1.PodRunning {
 		return false
 	}
-	for _, ns := range s.config.ExcludeNamespaces {
+	for _, ns := range s.Config.ExcludeNamespaces {
 		if pod.Namespace == ns {
 			return false
 		}
 	}
-	if s.config.ExcludeLabelSelector != "" {
-		selector, err := labels.Parse(s.config.ExcludeLabelSelector)
+	if s.Config.ExcludeLabelSelector != "" {
+		selector, err := labels.Parse(s.Config.ExcludeLabelSelector)
 		if err == nil && selector.Matches(labels.Set(pod.Labels)) {
 			return false
 		}
 	}
-	// 新逻辑：所有业务容器的Started字段必须为true（为nil视为false）
-	// 启动探针通过之后，Started字段才会被设置为true
 	for _, cs := range pod.Status.ContainerStatuses {
-		// if cs.State.Running == nil {
 		if cs.Started == nil || !*cs.Started {
 			return false
 		}
 	}
 	return true
 }
+
 
 // ProcessExistingContainers 处理现有容器（以Pod为主索引）
 func (s *KubeDiskGuardService) ProcessExistingContainers() error {
@@ -269,7 +256,7 @@ func (s *KubeDiskGuardService) WatchPodEvents() error {
 			log.Printf("[DEBUG] Event object is not *corev1.Pod, got: %T", event.Object)
 			continue
 		}
-		key := pod.Namespace + "/" + pod.Name
+
 		switch event.Type {
 		case watch.Modified:
 			log.Printf("[DEBUG] Modified event for pod: %s", key)
@@ -277,22 +264,26 @@ func (s *KubeDiskGuardService) WatchPodEvents() error {
 				log.Printf("[DEBUG] Pod %s should not be processed", key)
 				continue
 			}
-			old := podAnnotations[key]
+
+			key := pod.Namespace + "/" + pod.Name
+			old, exists := podAnnotations[key]
 			newAnn := pod.Annotations
-			readIops, writeIops := ParseIopsLimitFromAnnotations(newAnn, s.config.ContainerReadIOPSLimit, s.config.ContainerWriteIOPSLimit)
-			if reflect.DeepEqual(old.Annotations, newAnn) && old.ReadIops == readIops && old.WriteIops == writeIops {
-				log.Printf("[DEBUG] Pod %s annotations/iops unchanged, skipping", key)
+			readIops, writeIops := ParseIopsLimitFromAnnotations(newAnn, s.Config.ContainerReadIOPSLimit, s.Config.ContainerWriteIOPSLimit, s.Config.SmartLimitAnnotationPrefix)
+			readBps, writeBps := ParseBpsLimitFromAnnotations(newAnn, s.Config.ContainerReadBPSLimit, s.Config.ContainerWriteBPSLimit, s.Config.SmartLimitAnnotationPrefix)
+
+			if exists && reflect.DeepEqual(old.Annotations, newAnn) &&
+				old.ReadIOPS == readIops && old.WriteIOPS == writeIops &&
+				old.ReadBPS == readBps && old.WriteBPS == writeBps {
 				continue
 			}
+
 			s.processPodContainers(*pod)
-			podAnnotations[key] = struct {
-				Annotations map[string]string
-				ReadIops    int
-				WriteIops   int
-			}{
-				Annotations: copyMap(newAnn),
-				ReadIops:    readIops,
-				WriteIops:   writeIops,
+			podAnnotations[key] = PodAnnotationState{
+				Annotations: newAnn,
+				ReadIOPS:    readIops,
+				WriteIOPS:   writeIops,
+				ReadBPS:     readBps,
+				WriteBPS:    writeBps,
 			}
 		case watch.Deleted:
 			log.Printf("[DEBUG] Deleted event for pod: %s", key)
@@ -320,66 +311,66 @@ func ParseIopsLimitFromAnnotations(ann map[string]string, defaultRead, defaultWr
 			writeIops = val
 		}
 	}
-	// 通用iops注解，若存在，覆盖读写
-	if v, ok := ann["iops-limit/iops"]; ok {
-		var val int
-		_, err := fmt.Sscanf(v, "%d", &val)
-		if err == nil && val >= 0 {
-			readIops, writeIops = val, val
-		}
-	}
-	return
 }
 
-// copyMap 深拷贝map，防止引用问题
-func copyMap(src map[string]string) map[string]string {
-	dst := make(map[string]string)
-	for k, v := range src {
-		dst[k] = v
-	}
-	return dst
-}
-
-// Close 关闭服务
 func (s *KubeDiskGuardService) Close() error {
+	if s.smartLimit != nil {
+		s.smartLimit.Stop()
+	}
 	if s.runtime != nil {
 		return s.runtime.Close()
 	}
 	return nil
 }
 
-// Run 运行服务
 func (s *KubeDiskGuardService) Run() error {
-	log.Println("Starting IOPS limit service...")
-
-	// 确保在服务结束时关闭运行时连接
-	defer func() {
-		if err := s.Close(); err != nil {
-			log.Printf("Error closing runtime connection: %v", err)
-		}
-	}()
-
-	// 处理现有容器
-	if err := s.ProcessExistingContainers(); err != nil {
-		log.Printf("Failed to process existing containers: %v", err)
+	if s.smartLimit != nil {
+		s.smartLimit.Start()
 	}
 
-	// 监听新容器事件
-	return s.WatchEvents()
-}
-
-// getNodePods 获取本节点的所有Pod（优先使用kubelet API，fallback到API Server）
-func (s *KubeDiskGuardService) getNodePods() ([]corev1.Pod, error) {
-	return s.kubeClient.ListNodePodsWithKubeletFirst()
-}
-
-// ResetAllContainersIOPSLimit 解除所有容器的IOPS限速
-func (s *KubeDiskGuardService) ResetAllContainersIOPSLimit() error {
-	pods, err := s.getNodePods()
+	pods, err := s.kubeClient.ListNodePodsWithKubeletFirst()
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to list existing pods: %v", err)
+	}
+
+	podAnnotations := make(map[string]PodAnnotationState)
+	for _, pod := range pods {
+		if !s.ShouldProcessPod(pod) {
+			continue
+		}
+		s.processPodContainers(pod)
+		key := pod.Namespace + "/" + pod.Name
+		readIops, writeIops := ParseIopsLimitFromAnnotations(pod.Annotations, s.Config.ContainerReadIOPSLimit, s.Config.ContainerWriteIOPSLimit, s.Config.SmartLimitAnnotationPrefix)
+		readBps, writeBps := ParseBpsLimitFromAnnotations(pod.Annotations, s.Config.ContainerReadBPSLimit, s.Config.ContainerWriteBPSLimit, s.Config.SmartLimitAnnotationPrefix)
+		podAnnotations[key] = PodAnnotationState{
+			Annotations: pod.Annotations,
+			ReadIOPS:    readIops,
+			WriteIOPS:   writeIops,
+			ReadBPS:     readBps,
+			WriteBPS:    writeBps,
+		}
+	}
+
+	watcher, err := s.kubeClient.WatchNodePods()
+	if err != nil {
+		return fmt.Errorf("failed to watch pods: %v", err)
+	}
+	defer watcher.Stop()
+
+	log.Println("Start watching pod events...")
+	s.watchPodEvents(watcher, podAnnotations)
+	return nil
+}
+
+func (s *KubeDiskGuardService) ResetAllContainersIOPSLimit() error {
+	pods, err := s.kubeClient.ListNodePodsWithKubeletFirst()
+	if err != nil {
+		return fmt.Errorf("failed to list pods: %v", err)
 	}
 	for _, pod := range pods {
+		if !s.ShouldProcessPod(pod) {
+			continue
+		}
 		for _, cs := range pod.Status.ContainerStatuses {
 			containerID := parseRuntimeID(cs.ContainerID)
 			if containerID == "" {
@@ -398,63 +389,151 @@ func (s *KubeDiskGuardService) ResetAllContainersIOPSLimit() error {
 	return nil
 }
 
-// 新增：支持注入mock kubeclient
-func NewKubeDiskGuardServiceWithKubeClient(config *config.Config, kc kubeclient.IKubeClient) (*KubeDiskGuardService, error) {
+// NewKubeDiskGuardServiceWithKubeClient is a constructor for testing with a mock kubeclient
+func NewKubeDiskGuardServiceWithKubeClient(cfg *config.Config, kc kubeclient.IKubeClient) (*KubeDiskGuardService, error) {
 	service := &KubeDiskGuardService{
-		config:     config,
+		Config:     cfg,
 		kubeClient: kc,
 	}
-	// 自动检测运行时
-	if config.ContainerRuntime == "auto" {
-		config.ContainerRuntime = detector.DetectRuntime()
-	}
-	if config.CgroupVersion == "auto" {
-		config.CgroupVersion = detector.DetectCgroupVersion()
-	}
+
 	var err error
-	switch config.ContainerRuntime {
-	case "docker":
-		service.runtime, err = runtime.NewDockerRuntime(config)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create docker runtime: %v", err)
-		}
-	case "containerd":
-		service.runtime, err = runtime.NewContainerdRuntime(config)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create containerd runtime: %v", err)
-		}
-	default:
-		return nil, fmt.Errorf("unsupported container runtime: %s", config.ContainerRuntime)
+	service.runtime, err = runtime.NewDockerRuntime(cfg)
+	if err != nil {
+		return nil, err
 	}
+
+	if cfg.SmartLimitEnabled {
+		cgroupMgr := cgroup.NewManager(cfg.CgroupVersion)
+		service.smartLimit = smartlimit.NewSmartLimitManager(cfg, kc, cgroupMgr)
+	}
+
 	return service, nil
 }
 
-// ParseBpsLimitFromAnnotations 解析注解中的带宽限制（字节/秒）
-func ParseBpsLimitFromAnnotations(ann map[string]string, defaultRead, defaultWrite int) (readBps, writeBps int) {
-	// 优先单独注解
-	readBps, writeBps = defaultRead, defaultWrite
-	if v, ok := ann["iops-limit/read-bps"]; ok {
-		if val, err := parseBpsValue(v); err == nil && val >= 0 {
-			readBps = val
+func hasSmartLimitAnnotation(annotations map[string]string, prefix string) bool {
+	annotationPrefix := prefix + "/"
+	smartKeys := []string{
+		annotationkeys.IopsAnnotationKey, annotationkeys.ReadIopsAnnotationKey, annotationkeys.WriteIopsAnnotationKey,
+		annotationkeys.BpsAnnotationKey, annotationkeys.ReadBpsAnnotationKey, annotationkeys.WriteBpsAnnotationKey,
+	}
+	for _, key := range smartKeys {
+		if _, ok := annotations[annotationPrefix+key]; ok {
+			return true
 		}
 	}
-	if v, ok := ann["iops-limit/write-bps"]; ok {
-		if val, err := parseBpsValue(v); err == nil && val >= 0 {
-			writeBps = val
-		}
-	}
-	// 通用bps注解，若存在，覆盖读写
-	if v, ok := ann["iops-limit/bps"]; ok {
-		if val, err := parseBpsValue(v); err == nil && val >= 0 {
-			readBps, writeBps = val, val
-		}
-	}
-	return
+	return false
 }
 
-// parseBpsValue 支持纯数字（字节/秒），后续可扩展单位
-func parseBpsValue(s string) (int, error) {
-	var v int
-	_, err := fmt.Sscanf(s, "%d", &v)
-	return v, err
+func ParseIopsLimitFromAnnotations(annotations map[string]string, defaultReadIops, defaultWriteIops int, prefix string) (int, int) {
+	readIops, writeIops := defaultReadIops, defaultWriteIops
+	annotationPrefix := prefix + "/"
+
+	if val, ok := annotations[annotationPrefix+annotationkeys.RemovedAnnotationKey]; ok && val == "true" {
+		return 0, 0
+	}
+
+	useSmart := hasSmartLimitAnnotation(annotations, prefix)
+
+	if useSmart {
+		if iops, ok := annotations[annotationPrefix+annotationkeys.IopsAnnotationKey]; ok {
+			if value, err := strconv.Atoi(iops); err == nil {
+				return value, value
+			}
+		}
+		if riops, ok := annotations[annotationPrefix+annotationkeys.ReadIopsAnnotationKey]; ok {
+			if value, err := strconv.Atoi(riops); err == nil {
+				readIops = value
+			}
+		}
+		if wiops, ok := annotations[annotationPrefix+annotationkeys.WriteIopsAnnotationKey]; ok {
+			if value, err := strconv.Atoi(wiops); err == nil {
+				writeIops = value
+			}
+		}
+		return readIops, writeIops
+	}
+
+	// Fallback to legacy only if no smart limit annotations are present
+	if iops, ok := annotations[annotationkeys.LegacyIopsAnnotationKey]; ok {
+		if value, err := strconv.Atoi(iops); err == nil {
+			return value, value
+		}
+	}
+	if riops, ok := annotations[annotationkeys.LegacyReadIopsAnnotationKey]; ok {
+		if value, err := strconv.Atoi(riops); err == nil {
+			readIops = value
+		}
+	}
+	if wiops, ok := annotations[annotationkeys.LegacyWriteIopsAnnotationKey]; ok {
+		if value, err := strconv.Atoi(wiops); err == nil {
+			writeIops = value
+		}
+	}
+
+	return readIops, writeIops
+}
+
+func ParseBpsLimitFromAnnotations(annotations map[string]string, defaultReadBps, defaultWriteBps int, prefix string) (int, int) {
+	readBps, writeBps := defaultReadBps, defaultWriteBps
+	annotationPrefix := prefix + "/"
+
+	if val, ok := annotations[annotationPrefix+annotationkeys.RemovedAnnotationKey]; ok && val == "true" {
+		return 0, 0
+	}
+
+	useSmart := hasSmartLimitAnnotation(annotations, prefix)
+
+	if useSmart {
+		if bps, ok := annotations[annotationPrefix+annotationkeys.BpsAnnotationKey]; ok {
+			if value, err := units.RAMInBytes(bps); err == nil {
+				return int(value), int(value)
+			}
+		}
+		if rbps, ok := annotations[annotationPrefix+annotationkeys.ReadBpsAnnotationKey]; ok {
+			if value, err := units.RAMInBytes(rbps); err == nil {
+				readBps = int(value)
+			}
+		}
+		if wbps, ok := annotations[annotationPrefix+annotationkeys.WriteBpsAnnotationKey]; ok {
+			if value, err := units.RAMInBytes(wbps); err == nil {
+				writeBps = int(value)
+			}
+		}
+		return readBps, writeBps
+	}
+
+	// Fallback to legacy only if no smart limit annotations are present
+	if bps, ok := annotations[annotationkeys.LegacyBpsAnnotationKey]; ok {
+		if value, err := units.RAMInBytes(bps); err == nil {
+			return int(value), int(value)
+		}
+	}
+	if rbps, ok := annotations[annotationkeys.LegacyReadBpsAnnotationKey]; ok {
+		if value, err := units.RAMInBytes(rbps); err == nil {
+			readBps = int(value)
+		}
+	}
+	if wbps, ok := annotations[annotationkeys.LegacyWriteBpsAnnotationKey]; ok {
+		if value, err := units.RAMInBytes(wbps); err == nil {
+			writeBps = int(value)
+		}
+	}
+
+	return readBps, writeBps
+}
+
+func parseRuntimeID(containerID string) string {
+	parts := strings.Split(containerID, "://")
+	if len(parts) == 2 {
+		return parts[1]
+	}
+	return containerID
+}
+
+type PodAnnotationState struct {
+	Annotations map[string]string
+	ReadIOPS    int
+	WriteIOPS   int
+	ReadBPS     int
+	WriteBPS    int
 }

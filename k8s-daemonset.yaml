@@ -17,7 +17,7 @@ spec:
       hostPID: true
       containers:
       - name: kubediskguard
-        image: registry.kbsonlong.com/iops-limit-service:latest
+        image: registry.kbsonlong.com/io-limit-service:latest
         imagePullPolicy: Always
         securityContext:
           privileged: true

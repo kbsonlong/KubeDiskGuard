@@ -1,5 +1,5 @@
 # 二进制文件
-iops-limit-service
+io-limit-service
 *.exe
 *.exe~
 *.dll
