@@ -25,14 +25,15 @@ RUN go mod tidy && \
     CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -o kubediskguard main.go
 
 # 运行阶段
-FROM --platform=$TARGETPLATFORM alpine:3.18
+FROM alpine:3.18
 WORKDIR /app
+ARG BIN_NAME=kubediskguard
 
 # 安装必要的系统工具
 RUN apk add --no-cache ca-certificates tzdata util-linux
 
 # 从构建阶段复制二进制文件
-COPY --from=builder /app/kubediskguard .
+COPY --from=builder /app/kubediskguard /app/kubediskguard
 COPY --from=builder /app/README.md .
 
 # 暴露端口（如果需要的话）

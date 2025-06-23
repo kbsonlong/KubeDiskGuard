@@ -9,10 +9,22 @@ import (
 	"KubeDiskGuard/pkg/service"
 )
 
+var (
+	Version   = "dev"
+	GitCommit = "dev"
+	BuildTime = "unknown"
+)
+
 func main() {
 	// 命令行参数
 	resetAll := flag.Bool("reset-all", false, "解除所有容器的IOPS限速")
+	version := flag.Bool("version", false, "显示版本信息")
 	flag.Parse()
+
+	if *version {
+		log.Printf("KubeDiskGuard 版本信息: version=%s, build_time=%s", Version, BuildTime)
+		os.Exit(0)
+	}
 
 	// 获取默认配置
 	cfg := config.GetDefaultConfig()
