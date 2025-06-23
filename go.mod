@@ -8,8 +8,8 @@ require (
 	github.com/containerd/containerd v1.7.27
 	github.com/docker/docker v23.0.3+incompatible
 	github.com/docker/go-units v0.5.0
-	github.com/stretchr/testify v1.8.4
 	github.com/prometheus/client_golang v1.22.0
+	github.com/stretchr/testify v1.10.0
 	k8s.io/api v0.28.1
 	k8s.io/apimachinery v0.28.1
 	k8s.io/client-go v0.28.1

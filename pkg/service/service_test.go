@@ -36,10 +36,10 @@ func TestParseAnnotations(t *testing.T) {
 		{
 			name: "Smart limit annotations with custom prefix",
 			annotations: map[string]string{
-				customPrefix + "/read-iops-limit":  "100",
-				customPrefix + "/write-iops-limit": "150",
-				customPrefix + "/read-bps-limit":   "200K",
-				customPrefix + "/write-bps-limit":  "250M",
+				customPrefix + "/read-iops":  "100",
+				customPrefix + "/write-iops": "150",
+				customPrefix + "/read-bps":   "200K",
+				customPrefix + "/write-bps":  "250M",
 			},
 			prefix:            customPrefix,
 			expectedReadIops:  100,
@@ -50,8 +50,8 @@ func TestParseAnnotations(t *testing.T) {
 		{
 			name: "Limit removed annotation has top priority",
 			annotations: map[string]string{
-				prefix + "/limit-removed":   "true",
-				prefix + "/read-iops-limit": "100",
+				prefix + "/removed":   "true",
+				prefix + "/read-iops": "100",
 			},
 			prefix:            prefix,
 			expectedReadIops:  0,
@@ -62,8 +62,8 @@ func TestParseAnnotations(t *testing.T) {
 		{
 			name: "Legacy nvme annotations",
 			annotations: map[string]string{
-				"nvme-iops-limit": "2",
-				"nvme-bps-limit":  "3M",
+				"nvme-iops": "2",
+				"nvme-bps":  "3M",
 			},
 			prefix:            prefix,
 			expectedReadIops:  2,
@@ -74,9 +74,9 @@ func TestParseAnnotations(t *testing.T) {
 		{
 			name: "Smart limit has priority over legacy",
 			annotations: map[string]string{
-				prefix + "/read-iops-limit": "100",
-				"nvme-iops-limit":           "200",
-				"nvme-bps-limit":            "5M",
+				prefix + "/read-iops": "100",
+				"nvme-iops":           "200",
+				"nvme-bps":            "5M",
 			},
 			prefix:            prefix,
 			expectedReadIops:  100,
