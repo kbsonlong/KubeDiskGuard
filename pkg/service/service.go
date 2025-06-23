@@ -12,10 +12,38 @@ import (
 	"KubeDiskGuard/pkg/kubeclient"
 	"KubeDiskGuard/pkg/runtime"
 
+	"github.com/prometheus/client_golang/prometheus"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/watch"
 )
+
+var (
+	containerTotal = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "kubediskguard_container_total",
+		Help: "处理的容器总数",
+	})
+	containerSuccess = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "kubediskguard_container_success_total",
+		Help: "成功设置限速的容器数",
+	})
+	containerFail = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "kubediskguard_container_fail_total",
+		Help: "设置限速失败的容器数",
+	})
+	containerSkip = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "kubediskguard_container_skip_total",
+		Help: "被跳过的容器数",
+	})
+	containerReset = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "kubediskguard_container_reset_total",
+		Help: "被取消限速的容器数",
+	})
+)
+
+func init() {
+	prometheus.MustRegister(containerTotal, containerSuccess, containerFail, containerSkip, containerReset)
+}
 
 // KubeDiskGuardService 节点级磁盘IO资源守护与限速服务
 type KubeDiskGuardService struct {
@@ -110,29 +138,36 @@ func (s *KubeDiskGuardService) processPodContainers(pod corev1.Pod) {
 		if containerID == "" {
 			continue
 		}
+		containerTotal.Inc()
 		containerInfo, err := s.runtime.GetContainerByID(containerID)
 		if err != nil {
 			log.Printf("Failed to get container info for %s: %v", containerID, err)
+			containerFail.Inc()
 			continue
 		}
 		if s.ShouldSkipContainer(containerInfo.Image, containerInfo.Name) {
 			log.Printf("Skip IOPS/BPS limit for container %s (excluded by keyword)", containerInfo.ID)
+			containerSkip.Inc()
 			continue
 		}
 		// 判断是否需要解除限速
 		if readIopsVal == 0 && writeIopsVal == 0 && readBps == 0 && writeBps == 0 {
 			if err := s.runtime.ResetLimits(containerInfo); err != nil {
 				log.Printf("Failed to reset all limits for container %s: %v", containerInfo.ID, err)
+				containerFail.Inc()
 			} else {
 				log.Printf("Reset all limits for container %s (pod: %s/%s)", containerInfo.ID, pod.Namespace, pod.Name)
+				containerReset.Inc()
 			}
 			continue
 		}
 		// 一次性下发所有限速项
 		if err := s.runtime.SetLimits(containerInfo, readIopsVal, writeIopsVal, readBps, writeBps); err != nil {
 			log.Printf("Failed to set limits for container %s: %v", containerInfo.ID, err)
+			containerFail.Inc()
 		} else {
 			log.Printf("Applied limits for container %s (pod: %s/%s): riops=%d wiops=%d rbps=%d wbps=%d", containerInfo.ID, pod.Namespace, pod.Name, readIopsVal, writeIopsVal, readBps, writeBps)
+			containerSuccess.Inc()
 		}
 	}
 }
@@ -206,31 +241,47 @@ func (s *KubeDiskGuardService) WatchEvents() error {
 func (s *KubeDiskGuardService) WatchPodEvents() error {
 	watcher, err := s.kubeClient.WatchNodePods()
 	if err != nil {
+		log.Printf("[DEBUG] WatchNodePods failed: %v", err)
 		return err
 	}
 	// 修正：通过环境变量获取节点名
 	nodeName := os.Getenv("NODE_NAME")
 	log.Printf("Start watching pods on node: %s", nodeName)
+	log.Printf("[DEBUG] Watcher created, entering event loop...")
 	podAnnotations := make(map[string]struct {
 		Annotations map[string]string
 		ReadIops    int
 		WriteIops   int
 	})
-	for event := range watcher.ResultChan() {
+	ch := watcher.ResultChan()
+	if ch == nil {
+		log.Printf("[DEBUG] watcher.ResultChan() is nil! Watcher: %#v", watcher)
+		return fmt.Errorf("watcher.ResultChan() is nil")
+	}
+	for event := range ch {
+		log.Printf("[DEBUG] Received event: %v", event.Type)
+		if event.Object == nil {
+			log.Printf("[DEBUG] Event object is nil")
+			continue
+		}
 		pod, ok := event.Object.(*corev1.Pod)
 		if !ok {
+			log.Printf("[DEBUG] Event object is not *corev1.Pod, got: %T", event.Object)
 			continue
 		}
 		key := pod.Namespace + "/" + pod.Name
 		switch event.Type {
 		case watch.Modified:
+			log.Printf("[DEBUG] Modified event for pod: %s", key)
 			if !s.ShouldProcessPod(*pod) {
+				log.Printf("[DEBUG] Pod %s should not be processed", key)
 				continue
 			}
 			old := podAnnotations[key]
 			newAnn := pod.Annotations
 			readIops, writeIops := ParseIopsLimitFromAnnotations(newAnn, s.config.ContainerReadIOPSLimit, s.config.ContainerWriteIOPSLimit)
 			if reflect.DeepEqual(old.Annotations, newAnn) && old.ReadIops == readIops && old.WriteIops == writeIops {
+				log.Printf("[DEBUG] Pod %s annotations/iops unchanged, skipping", key)
 				continue
 			}
 			s.processPodContainers(*pod)
@@ -244,9 +295,11 @@ func (s *KubeDiskGuardService) WatchPodEvents() error {
 				WriteIops:   writeIops,
 			}
 		case watch.Deleted:
+			log.Printf("[DEBUG] Deleted event for pod: %s", key)
 			delete(podAnnotations, key)
 		}
 	}
+	log.Printf("[DEBUG] Event loop exited (watcher channel closed)")
 	return nil
 }
 
