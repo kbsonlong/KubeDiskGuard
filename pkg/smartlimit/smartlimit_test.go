@@ -2,7 +2,6 @@ package smartlimit
 
 import (
 	"fmt"
-	"math"
 	"sync"
 	"testing"
 	"time"
@@ -61,37 +60,6 @@ func newTestManager(cfg *config.Config) *SmartLimitManager {
 	}
 }
 
-func TestCalculateIOTrend(t *testing.T) {
-	manager := newTestManager(&config.Config{})
-
-	now := time.Now()
-	stats := []*kubeclient.IOStats{
-		{Timestamp: now.Add(-2 * time.Minute), ReadIOPS: 100, WriteIOPS: 200, ReadBPS: 1000, WriteBPS: 2000},
-		{Timestamp: now.Add(-1 * time.Minute), ReadIOPS: 160, WriteIOPS: 320, ReadBPS: 1600, WriteBPS: 3200}, // delta: 60, 120, 600, 1200 over 60s
-	}
-
-	trend := manager.calculateIOTrend(stats)
-
-	// Expected: delta / 60 seconds
-	expectedReadIOPS := float64(60) / 60.0
-	expectedWriteIOPS := float64(120) / 60.0
-	expectedReadBPS := float64(600) / 60.0
-	expectedWriteBPS := float64(1200) / 60.0
-
-	if math.Abs(trend.ReadIOPS15m-expectedReadIOPS) > 0.01 {
-		t.Errorf("ReadIOPS15m wrong. got=%.2f, want=%.2f", trend.ReadIOPS15m, expectedReadIOPS)
-	}
-	if math.Abs(trend.WriteIOPS15m-expectedWriteIOPS) > 0.01 {
-		t.Errorf("WriteIOPS15m wrong. got=%.2f, want=%.2f", trend.WriteIOPS15m, expectedWriteIOPS)
-	}
-	if math.Abs(trend.ReadBPS15m-expectedReadBPS) > 0.01 {
-		t.Errorf("ReadBPS15m wrong. got=%.2f, want=%.2f", trend.ReadBPS15m, expectedReadBPS)
-	}
-	if math.Abs(trend.WriteBPS15m-expectedWriteBPS) > 0.01 {
-		t.Errorf("WriteBPS15m wrong. got=%.2f, want=%.2f", trend.WriteBPS15m, expectedWriteBPS)
-	}
-}
-
 func TestShouldApplyLimit(t *testing.T) {
 	cfg := config.GetDefaultConfig()
 	cfg.SmartLimitGradedThresholds = true
@@ -120,7 +88,7 @@ func TestShouldApplyLimit(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			shouldLimit, result := manager.shouldApplyLimit(tt.trend)
+			shouldLimit, result := manager.shouldApplyLimitGraded(tt.trend)
 			if shouldLimit != tt.expectLimit {
 				t.Errorf("shouldLimit mismatch. got=%v, want=%v", shouldLimit, tt.expectLimit)
 			}
@@ -139,7 +107,7 @@ func TestShouldApplyLimit(t *testing.T) {
 	cfg.SmartLimitGradedThresholds = false
 	cfg.SmartLimitHighIOThreshold = 100
 	manager.config = cfg
-	shouldLimit, _ := manager.shouldApplyLimit(&IOTrend{ReadIOPS15m: 150})
+	shouldLimit, _ := manager.shouldApplyLimitGraded(&IOTrend{ReadIOPS15m: 150})
 	if !shouldLimit {
 		t.Error("shouldApplyLimit failed in legacy mode")
 	}

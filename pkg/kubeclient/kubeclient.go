@@ -48,6 +48,7 @@ type IKubeClient interface {
 	CleanupCadvisorData(maxAge time.Duration)
 	GetCadvisorStats() (containerCount, dataPointCount int)
 	ConvertCadvisorToIOStats(metrics *cadvisor.CadvisorMetrics, containerID string) *IOStats
+	CreateEvent(namespace, podName, eventType, reason, message string) error
 }
 
 // 确保KubeClient实现IKubeClient
@@ -171,4 +172,35 @@ func (k *KubeClient) UpdatePod(pod *corev1.Pod) (*corev1.Pod, error) {
 		return nil, fmt.Errorf("failed to update pod: %v", err)
 	}
 	return pod, nil
+}
+
+// CreateEvent 在指定 Pod 上创建事件
+func (k *KubeClient) CreateEvent(namespace, podName, eventType, reason, message string) error {
+	ref, err := k.Clientset.CoreV1().Pods(namespace).Get(context.TODO(), podName, metav1.GetOptions{})
+	if err != nil {
+		return err
+	}
+	event := &corev1.Event{
+		ObjectMeta: metav1.ObjectMeta{
+			GenerateName: podName + "-smartlimit-",
+			Namespace:    namespace,
+		},
+		InvolvedObject: corev1.ObjectReference{
+			Kind:       "Pod",
+			Namespace:  namespace,
+			Name:       podName,
+			UID:        ref.UID,
+			APIVersion: "v1",
+		},
+		Reason:  reason,
+		Message: message,
+		Source: corev1.EventSource{
+			Component: "smartlimit-controller",
+		},
+		FirstTimestamp: metav1.Now(),
+		LastTimestamp:  metav1.Now(),
+		Type:           eventType,
+	}
+	_, err = k.Clientset.CoreV1().Events(namespace).Create(context.TODO(), event, metav1.CreateOptions{})
+	return err
 }
