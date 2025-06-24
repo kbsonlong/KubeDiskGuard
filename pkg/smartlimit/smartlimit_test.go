@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"sync"
 	"testing"
-	"time"
 
 	"KubeDiskGuard/pkg/config"
 	"KubeDiskGuard/pkg/kubeclient"
@@ -49,6 +48,10 @@ func (m *mockKubeClient) UpdatePod(pod *corev1.Pod) (*corev1.Pod, error) {
 	return nil, fmt.Errorf("pod not found")
 }
 
+func (m *mockKubeClient) CreateEvent(namespace, podName, eventType, reason, message string) error {
+	return nil
+}
+
 func newTestManager(cfg *config.Config) *SmartLimitManager {
 	return &SmartLimitManager{
 		config:      cfg,
@@ -57,96 +60,6 @@ func newTestManager(cfg *config.Config) *SmartLimitManager {
 		stopCh:      make(chan struct{}),
 		kubeClient:  &mockKubeClient{},
 		// No cgroupMgr needed for these specific tests
-	}
-}
-
-func TestShouldApplyLimit(t *testing.T) {
-	cfg := config.GetDefaultConfig()
-	cfg.SmartLimitGradedThresholds = true
-	cfg.SmartLimitIOThreshold15m = 100
-	cfg.SmartLimitIOPSLimit15m = 115
-	cfg.SmartLimitIOThreshold30m = 200
-	cfg.SmartLimitIOPSLimit30m = 230
-	cfg.SmartLimitIOThreshold60m = 300
-	cfg.SmartLimitIOPSLimit60m = 360
-
-	manager := newTestManager(cfg)
-
-	tests := []struct {
-		name            string
-		trend           *IOTrend
-		expectLimit     bool
-		expectedIOPS    int
-		expectedTrigger string
-	}{
-		{"NoLimit", &IOTrend{}, false, 0, ""},
-		{"15mTrigger", &IOTrend{ReadIOPS15m: 150}, true, 115, "15m"},
-		{"30mTrigger", &IOTrend{ReadIOPS15m: 50, ReadIOPS30m: 250}, true, 230, "30m"},
-		{"60mTrigger", &IOTrend{ReadIOPS15m: 50, ReadIOPS30m: 150, ReadIOPS60m: 350}, true, 360, "60m"},
-		{"15mHasPriority", &IOTrend{ReadIOPS15m: 150, ReadIOPS30m: 250}, true, 115, "15m"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			shouldLimit, result := manager.shouldApplyLimitGraded(tt.trend)
-			if shouldLimit != tt.expectLimit {
-				t.Errorf("shouldLimit mismatch. got=%v, want=%v", shouldLimit, tt.expectLimit)
-			}
-			if shouldLimit {
-				if result.ReadIOPS != tt.expectedIOPS {
-					t.Errorf("expectedIOPS mismatch. got=%d, want=%d", result.ReadIOPS, tt.expectedIOPS)
-				}
-				if result.TriggeredBy != tt.expectedTrigger {
-					t.Errorf("expectedTrigger mismatch. got=%s, want=%s", result.TriggeredBy, tt.expectedTrigger)
-				}
-			}
-		})
-	}
-
-	// Test legacy mode
-	cfg.SmartLimitGradedThresholds = false
-	cfg.SmartLimitHighIOThreshold = 100
-	manager.config = cfg
-	shouldLimit, _ := manager.shouldApplyLimitGraded(&IOTrend{ReadIOPS15m: 150})
-	if !shouldLimit {
-		t.Error("shouldApplyLimit failed in legacy mode")
-	}
-}
-
-func TestShouldRemoveLimit(t *testing.T) {
-	cfg := config.GetDefaultConfig()
-	cfg.SmartLimitRemoveThreshold = 50
-	cfg.SmartLimitRemoveDelay = 5         // 5 minutes
-	cfg.SmartLimitRemoveCheckInterval = 1 // 1 minute
-	manager := newTestManager(cfg)
-
-	now := time.Now()
-
-	status := &LimitStatus{
-		IsLimited:   true,
-		TriggeredBy: "15m",
-		AppliedAt:   now.Add(-10 * time.Minute), // Applied 10 mins ago
-		LastCheckAt: now.Add(-2 * time.Minute),  // Last checked 2 mins ago
-	}
-
-	tests := []struct {
-		name         string
-		trend        *IOTrend
-		status       *LimitStatus
-		expectRemove bool
-	}{
-		{"IOHigh", &IOTrend{ReadIOPS15m: 60}, status, false},
-		{"IOLow", &IOTrend{ReadIOPS15m: 40}, status, true},
-		{"InDelay", &IOTrend{ReadIOPS15m: 40}, &LimitStatus{AppliedAt: now.Add(-3 * time.Minute), LastCheckAt: now.Add(-2 * time.Minute), TriggeredBy: "15m"}, false},
-		{"InCheckInterval", &IOTrend{ReadIOPS15m: 40}, &LimitStatus{AppliedAt: now.Add(-10 * time.Minute), LastCheckAt: now.Add(-30 * time.Second), TriggeredBy: "15m"}, false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if remove := manager.shouldRemoveLimit(tt.trend, tt.status); remove != tt.expectRemove {
-				t.Errorf("shouldRemoveLimit mismatch. got=%v, want=%v", remove, tt.expectRemove)
-			}
-		})
 	}
 }
 
@@ -224,38 +137,6 @@ func TestRestoreLimitStatus(t *testing.T) {
 	}
 	if status.LimitResult.ReadIOPS != 100 {
 		t.Errorf("container1 ReadIOPS mismatch. got=%d, want=100", status.LimitResult.ReadIOPS)
-	}
-}
-
-func TestShouldUpdateLimit(t *testing.T) {
-	manager := newTestManager(&config.Config{})
-
-	currentStatus := &LimitStatus{
-		IsLimited:   true,
-		TriggeredBy: "15m",
-		LimitResult: &LimitResult{
-			TriggeredBy: "15m",
-			ReadIOPS:    100,
-		},
-	}
-
-	tests := []struct {
-		name         string
-		newResult    *LimitResult
-		expectUpdate bool
-	}{
-		{"NoChange", &LimitResult{TriggeredBy: "15m", ReadIOPS: 100}, false},
-		{"IOPSChange", &LimitResult{TriggeredBy: "15m", ReadIOPS: 200}, true},
-		{"TriggerChange", &LimitResult{TriggeredBy: "30m", ReadIOPS: 100}, true},
-		{"BothChange", &LimitResult{TriggeredBy: "30m", ReadIOPS: 200}, true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if update := manager.shouldUpdateLimit(currentStatus, tt.newResult); update != tt.expectUpdate {
-				t.Errorf("shouldUpdateLimit mismatch. got=%v, want=%v", update, tt.expectUpdate)
-			}
-		})
 	}
 }
 

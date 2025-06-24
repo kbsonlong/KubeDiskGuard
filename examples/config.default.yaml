@@ -1,0 +1,121 @@
+# KubeDiskGuard 默认配置文件
+# 此文件包含所有可配置项及其默认值
+
+# ==================== 容器IO限制配置 ====================
+# 容器IOPS限制（每秒IO操作数）
+container_iops_limit: 500
+
+# 容器读IOPS限制
+container_read_iops_limit: 500
+
+# 容器写IOPS限制
+container_write_iops_limit: 500
+
+# 容器读带宽限制（字节/秒，0表示不限制）
+container_read_bps_limit: 0
+
+# 容器写带宽限制（字节/秒，0表示不限制）
+container_write_bps_limit: 0
+
+# ==================== 基础配置 ====================
+# 数据挂载点路径
+data_mount: "/data"
+
+# 排除的容器关键词（包含这些关键词的容器将被跳过）
+exclude_keywords:
+  - "pause"
+  - "istio-proxy"
+  - "psmdb"
+  - "kube-system"
+  - "koordinator"
+  - "apisix"
+
+# 排除的命名空间（这些命名空间中的容器将被跳过）
+exclude_namespaces:
+  - "kube-system"
+
+# 排除的标签选择器（匹配此选择器的容器将被跳过）
+exclude_label_selector: ""
+
+# ==================== 容器运行时配置 ====================
+# Containerd命名空间
+containerd_namespace: "k8s.io"
+
+# 容器运行时类型（auto/docker/containerd）
+container_runtime: "auto"
+
+# Cgroup版本（auto/v1/v2）
+cgroup_version: "auto"
+
+# 容器运行时Socket路径
+container_socket_path: "/run/containerd/containerd.sock"
+
+# ==================== Kubelet API配置 ====================
+# Kubelet主机地址
+kubelet_host: "localhost"
+
+# Kubelet端口
+kubelet_port: "10250"
+
+# Kubeconfig文件路径（用于集群外部运行）
+kube_config_path: ""
+
+# Kubelet Token文件路径
+kubelet_token_path: ""
+
+# Kubelet CA证书路径
+kubelet_ca_path: ""
+
+# 是否跳过Kubelet证书验证
+kubelet_skip_verify: false
+
+# ==================== 智能限速配置 ====================
+# 是否启用智能限速功能
+smart_limit_enabled: false
+
+# 智能限速监控间隔（秒）
+smart_limit_monitor_interval: 60
+
+# 智能限速历史数据保留窗口（分钟）
+smart_limit_history_window: 60
+
+# 智能限速注解前缀
+smart_limit_annotation_prefix: "io-limit"
+
+# 智能限速多窗口配置（支持1-3个自定义窗口）
+smart_limit_windows:
+  # 1分钟窗口配置
+  - duation: 1  # 窗口长度（分钟）
+    iops_threshold: 500  # IOPS阈值
+    bps_threshold: 20971520  # BPS阈值（20MB/s）
+  
+  # 5分钟窗口配置
+  - duation: 5
+    iops_threshold: 800
+    bps_threshold: 31457280  # 30MB/s
+  
+  # 30分钟窗口配置
+  - duation: 30
+    iops_threshold: 1000
+    bps_threshold: 52428800  # 50MB/s
+
+# ==================== 解除限速配置 ====================
+# 解除限速阈值（相对值，0.0-1.0）
+smart_limit_remove_threshold: 0.0
+
+# 解除限速延迟（分钟）
+smart_limit_remove_delay: 5
+
+# 解除限速检查间隔（分钟）
+smart_limit_remove_check_interval: 1
+
+# ==================== 环境变量说明 ====================
+# 以上所有配置项都可以通过环境变量覆盖，环境变量名规则：
+# 1. 将配置项名称转换为大写
+# 2. 将下划线保持不变
+# 例如：
+# - container_iops_limit -> CONTAINER_IOPS_LIMIT
+# - smart_limit_enabled -> SMART_LIMIT_ENABLED
+# - kubelet_host -> KUBELET_HOST
+#
+# 配置优先级：环境变量 > 配置文件 > 默认值

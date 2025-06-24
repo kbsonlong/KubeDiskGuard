@@ -1,0 +1,83 @@
+{
+  "_comment": "KubeDiskGuard 默认配置文件 (JSON格式)",
+  "_description": "此文件包含所有可配置项及其默认值",
+  
+  "_section_io_limits": "==================== 容器IO限制配置 ====================",
+  "container_iops_limit": 500,
+  "container_read_iops_limit": 500,
+  "container_write_iops_limit": 500,
+  "container_read_bps_limit": 0,
+  "container_write_bps_limit": 0,
+  
+  "_section_basic": "==================== 基础配置 ====================",
+  "data_mount": "/data",
+  "exclude_keywords": [
+    "pause",
+    "istio-proxy",
+    "psmdb",
+    "kube-system",
+    "koordinator",
+    "apisix"
+  ],
+  "exclude_namespaces": [
+    "kube-system"
+  ],
+  "exclude_label_selector": "",
+  
+  "_section_runtime": "==================== 容器运行时配置 ====================",
+  "containerd_namespace": "k8s.io",
+  "container_runtime": "auto",
+  "cgroup_version": "auto",
+  "container_socket_path": "/run/containerd/containerd.sock",
+  
+  "_section_kubelet": "==================== Kubelet API配置 ====================",
+  "kubelet_host": "localhost",
+  "kubelet_port": "10250",
+  "kube_config_path": "",
+  "kubelet_token_path": "",
+  "kubelet_ca_path": "",
+  "kubelet_skip_verify": false,
+  
+  "_section_smart_limit": "==================== 智能限速配置 ====================",
+  "smart_limit_enabled": false,
+  "smart_limit_monitor_interval": 60,
+  "smart_limit_history_window": 60,
+  "smart_limit_annotation_prefix": "io-limit",
+  "smart_limit_windows": [
+    {
+      "_comment": "1分钟窗口配置",
+      "duation": 1,
+      "iops_threshold": 500,
+      "bps_threshold": 20971520
+    },
+    {
+      "_comment": "5分钟窗口配置",
+      "duation": 5,
+      "iops_threshold": 800,
+      "bps_threshold": 31457280
+    },
+    {
+      "_comment": "30分钟窗口配置",
+      "duation": 30,
+      "iops_threshold": 1000,
+      "bps_threshold": 52428800
+    }
+  ],
+  
+  "_section_remove_limits": "==================== 解除限速配置 ====================",
+  "smart_limit_remove_threshold": 0.0,
+  "smart_limit_remove_delay": 5,
+  "smart_limit_remove_check_interval": 1,
+  
+  "_env_variables_info": {
+    "_description": "环境变量说明",
+    "_rule": "以上所有配置项都可以通过环境变量覆盖",
+    "_naming_convention": "配置项名称转换为大写，下划线保持不变",
+    "_examples": {
+      "container_iops_limit": "CONTAINER_IOPS_LIMIT",
+      "smart_limit_enabled": "SMART_LIMIT_ENABLED",
+      "kubelet_host": "KUBELET_HOST"
+    },
+    "_priority": "环境变量 > 配置文件 > 默认值"
+  }
+}

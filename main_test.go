@@ -197,6 +197,11 @@ func (m *mockKubeClient) ConvertCadvisorToIOStats(metrics *cadvisor.CadvisorMetr
 	return &kubeclient.IOStats{}
 }
 
+func (m *mockKubeClient) CreateEvent(namespace, podName, eventType, reason, message string) error {
+	// 测试用，直接返回 nil
+	return nil
+}
+
 func TestResetAllContainersIOPSLimit(t *testing.T) {
 	os.Setenv("NODE_NAME", "test-node")
 	defer os.Unsetenv("NODE_NAME")

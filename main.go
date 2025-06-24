@@ -6,10 +6,10 @@ import (
 	"net/http"
 	"os"
 
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+
 	"KubeDiskGuard/pkg/config"
 	"KubeDiskGuard/pkg/service"
-
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 var (
@@ -43,20 +43,44 @@ func main() {
 		}
 	}()
 
-	// 获取默认配置
+	// 加载配置
 	cfg := config.GetDefaultConfig()
-
-	// 从环境变量加载配置
 	config.LoadFromEnv(cfg)
+
+	// 实现配置文件监听，支持动态配置更新
+	configPath := os.Getenv("CONFIG_FILE_PATH") // 从环境变量获取配置文件路径
+	configWatcher := config.NewConfigWatcher(configPath, cfg)
+
+	// 添加配置更新回调
+	configWatcher.AddUpdateCallback(func(newCfg *config.Config) {
+		log.Printf("[INFO] 配置已更新，新的IOPS限制: %d", newCfg.ContainerIOPSLimit)
+		log.Printf("[INFO] 新的数据挂载点: %s", newCfg.DataMount)
+		log.Printf("[INFO] 智能限速是否启用: %t", newCfg.SmartLimitEnabled)
+		// 这里可以添加更多的配置更新处理逻辑
+		// 例如：通知服务重新初始化某些组件
+	})
+
+	// 启动配置文件监听
+	if err := configWatcher.Start(); err != nil {
+		log.Printf("[WARN] 配置文件监听启动失败: %v，将使用静态配置", err)
+	}
+	defer configWatcher.Stop()
 
 	// 打印配置
 	log.Printf("Configuration: %s", cfg.ToJSON())
 
-	// 创建并运行服务
-	svc, err := service.NewKubeDiskGuardService(cfg)
+	// 创建服务（使用配置监听器获取配置）
+	svc, err := service.NewKubeDiskGuardService(configWatcher.GetConfig())
 	if err != nil {
-		log.Fatalf("Failed to create IOPS limit service: %v", err)
+		log.Fatalf("创建服务失败: %v", err)
 	}
+
+	// 添加服务重新配置的回调
+	configWatcher.AddUpdateCallback(func(newCfg *config.Config) {
+		// 这里可以实现服务的热重载逻辑
+		// 例如：更新服务内部的配置引用
+		log.Printf("[INFO] 服务配置更新通知已发送")
+	})
 
 	if *resetAll {
 		if err := svc.ResetAllContainersIOPSLimit(); err != nil {

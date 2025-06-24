@@ -3,13 +3,11 @@ package smartlimit
 import (
 	"fmt"
 	"log"
-	"math"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	"KubeDiskGuard/pkg/annotationkeys"
 	"KubeDiskGuard/pkg/cgroup"
 	"KubeDiskGuard/pkg/config"
 	"KubeDiskGuard/pkg/kubeclient"
@@ -82,6 +80,25 @@ type SmartLimitManager struct {
 	stopCh          chan struct{}
 }
 
+// WindowTrend 表示单个窗口的趋势，区分读写IOPS/BPS
+// Duration: 窗口长度（分钟）
+type WindowTrend struct {
+	Duration  int
+	ReadIOPS  float64
+	WriteIOPS float64
+	ReadBPS   float64
+	WriteBPS  float64
+}
+
+type SmartLimitConfig struct {
+	Enabled             bool
+	MonitorInterval     int
+	Windows             []config.WindowConfig
+	RemoveThreshold     int
+	RemoveDelay         int
+	RemoveCheckInterval int
+}
+
 // NewSmartLimitManager 创建智能限速管理器
 func NewSmartLimitManager(config *config.Config, kubeClient kubeclient.IKubeClient, cgroupMgr *cgroup.Manager) *SmartLimitManager {
 	return &SmartLimitManager{
@@ -142,69 +159,111 @@ func (m *SmartLimitManager) monitorLoop() {
 
 // analyzeAndLimit 拆分为分析和限速调度
 func (m *SmartLimitManager) analyzeAndLimit() {
-	trends := m.AnalyzeAllContainerTrends()
+	trends := m.AnalyzeAllContainerTrends() // map[string][]WindowTrend
 	m.ApplyLimitIfNeeded(trends)
 }
 
-// ApplyLimitIfNeeded 根据分析结果判断并执行限速
-func (m *SmartLimitManager) ApplyLimitIfNeeded(trends map[string]*IOTrend) {
-	for containerID, trend := range trends {
-		m.applyLimitForContainer(containerID, trend)
+// ApplyLimitIfNeeded 根据分析结果判断并执行限速（多窗口分级，纯 WindowTrend 版）
+func (m *SmartLimitManager) ApplyLimitIfNeeded(trends map[string][]WindowTrend) {
+	for containerID, windowTrends := range trends {
+		m.applyLimitForContainer(containerID, windowTrends)
 	}
 }
 
-// applyLimitForContainer 根据趋势判断并执行限速
-func (m *SmartLimitManager) applyLimitForContainer(containerID string, trend *IOTrend) {
+// applyLimitForContainer 多窗口分级限速决策（合并限速与解除逻辑）
+func (m *SmartLimitManager) applyLimitForContainer(containerID string, windowTrends []WindowTrend) {
 	m.mu.RLock()
 	history, exists := m.history[containerID]
 	m.mu.RUnlock()
-	if !exists {
+	if !exists || len(windowTrends) == 0 {
 		return
 	}
-	limitStatus := m.getLimitStatus(containerID)
-	shouldLimit, limitResult := m.shouldApplyLimitGraded(trend)
 
-	// 1. 需要解除限速
-	if !shouldLimit && limitStatus != nil && limitStatus.IsLimited {
-		if m.shouldRemoveLimit(trend, limitStatus) {
-			m.removeSmartLimit(history.PodName, history.Namespace, trend, limitStatus)
-			m.updateLimitStatus(containerID, history.PodName, history.Namespace, false, nil)
-			removeReason := m.buildRemoveReason(trend, limitStatus)
-			_ = m.kubeClient.CreateEvent(history.Namespace, history.PodName, "Normal", "SmartLimitRemoved", "解除限速原因: "+removeReason)
-		} else {
-			limitStatus.mu.Lock()
-			limitStatus.LastCheckAt = time.Now()
-			limitStatus.mu.Unlock()
+	prefix := m.config.SmartLimitAnnotationPrefix
+	// 1. 优先级遍历，找到第一个命中阈值的窗口
+	for idx, trend := range windowTrends {
+		wcfg := m.config.SmartLimitWindows[idx]
+		if trend.ReadIOPS > float64(wcfg.IOPSThreshold) || trend.WriteIOPS > float64(wcfg.IOPSThreshold) ||
+			trend.ReadBPS > float64(wcfg.BPSThreshold) || trend.WriteBPS > float64(wcfg.BPSThreshold) {
+			// 需要限速，下发注解
+			readIOPS := int(trend.ReadIOPS * 0.8)
+			writeIOPS := int(trend.WriteIOPS * 0.8)
+			readBPS := int(trend.ReadBPS * 0.8)
+			writeBPS := int(trend.WriteBPS * 0.8)
+			pod, err := m.kubeClient.GetPod(history.Namespace, history.PodName)
+			if err != nil {
+				log.Printf("[SmartLimit] 获取Pod失败: %v", err)
+				return
+			}
+			annotations := make(map[string]string)
+			for k, v := range pod.Annotations {
+				annotations[k] = v
+			}
+			annotations[prefix+"/read-iops-limit"] = strconv.Itoa(readIOPS)
+			annotations[prefix+"/write-iops-limit"] = strconv.Itoa(writeIOPS)
+			annotations[prefix+"/read-bps-limit"] = strconv.Itoa(readBPS)
+			annotations[prefix+"/write-bps-limit"] = strconv.Itoa(writeBPS)
+			annotations[prefix+"/triggered-by"] = fmt.Sprintf("%dmin", trend.Duration)
+			annotations[prefix+"/trigger-reason"] = fmt.Sprintf("窗口%d分钟IO超阈值", trend.Duration)
+			pod.Annotations = annotations
+			_, err = m.kubeClient.UpdatePod(pod)
+			if err != nil {
+				log.Printf("[SmartLimit] 更新Pod注解失败: %v", err)
+				return
+			}
+			eventMsg := fmt.Sprintf("已应用智能限速: ReadIOPS=%d, WriteIOPS=%d, ReadBPS=%d, WriteBPS=%d", readIOPS, writeIOPS, readBPS, writeBPS)
+			err = m.kubeClient.CreateEvent(history.Namespace, history.PodName, "Warning", "SmartLimitApplied", eventMsg)
+			if err != nil {
+				log.Printf("[SmartLimit] 创建限速事件失败: %v", err)
+			}
+			log.Printf("[SmartLimit] Pod %s/%s 窗口%d分钟限速: ReadIOPS=%d, WriteIOPS=%d, ReadBPS=%d, WriteBPS=%d", history.PodName, history.Namespace, trend.Duration, readIOPS, writeIOPS, readBPS, writeBPS)
+			m.mu.Lock()
+			m.limitStatus[containerID] = &LimitStatus{
+				ContainerID: containerID,
+				PodName:     history.PodName,
+				Namespace:   history.Namespace,
+				IsLimited:   true,
+				AppliedAt:   time.Now(),
+				LastCheckAt: time.Now(),
+			}
+			m.mu.Unlock()
+			return // 命中阈值，限速，直接返回
 		}
-		return
 	}
-
-	// 2. 不需要限速，且当前未限速，直接返回
-	if !shouldLimit {
-		return
-	}
-
-	// 3. 需要限速，且已限速，判断是否需要更新
-	if limitStatus != nil && limitStatus.IsLimited {
-		if !m.shouldUpdateLimit(limitStatus, limitResult) {
+	// 2. 所有窗口都未命中阈值，尝试解除限速
+	m.mu.Lock()
+	status, limited := m.limitStatus[containerID]
+	m.mu.Unlock()
+	if limited && status.IsLimited {
+		pod, err := m.kubeClient.GetPod(history.Namespace, history.PodName)
+		if err != nil {
+			log.Printf("[SmartLimit] 获取Pod失败: %v", err)
 			return
 		}
-		if limitResult != nil {
-			log.Printf("Updating limit for container %s: %s", containerID, limitResult.Reason)
-			m.applySmartLimitWithResult(history.PodName, history.Namespace, trend, limitResult)
-			_ = m.kubeClient.CreateEvent(history.Namespace, history.PodName, "Normal", "SmartLimitUpdated", "限速更新: "+limitResult.Reason)
-		} else {
-			m.applySmartLimit(history.PodName, history.Namespace, trend)
+		annotations := make(map[string]string)
+		for k, v := range pod.Annotations {
+			if !strings.HasPrefix(k, prefix+"/") {
+				annotations[k] = v
+			}
 		}
-		m.updateLimitStatus(containerID, history.PodName, history.Namespace, true, limitResult)
-		return
-	}
-
-	// 4. 需要限速，且未限速，首次限速
-	if limitResult != nil {
-		m.applySmartLimitWithResult(history.PodName, history.Namespace, trend, limitResult)
-		m.updateLimitStatus(containerID, history.PodName, history.Namespace, true, limitResult)
-		_ = m.kubeClient.CreateEvent(history.Namespace, history.PodName, "Normal", "SmartLimitApplied", "限速原因: "+limitResult.Reason)
+		annotations[prefix+"/limit-removed"] = "true"
+		annotations[prefix+"/removed-at"] = time.Now().Format(time.RFC3339)
+		annotations[prefix+"/removed-reason"] = "IO已恢复正常，解除限速"
+		pod.Annotations = annotations
+		_, err = m.kubeClient.UpdatePod(pod)
+		if err != nil {
+			log.Printf("[SmartLimit] 移除限速注解失败: %v", err)
+			return
+		}
+		eventMsg := "已解除智能限速，IO已恢复正常"
+		err = m.kubeClient.CreateEvent(history.Namespace, history.PodName, "Normal", "SmartLimitRemoved", eventMsg)
+		if err != nil {
+			log.Printf("[SmartLimit] 创建解除限速事件失败: %v", err)
+		}
+		log.Printf("[SmartLimit] Pod %s/%s 解除限速", history.PodName, history.Namespace)
+		m.mu.Lock()
+		delete(m.limitStatus, containerID)
+		m.mu.Unlock()
 	}
 }
 
@@ -251,372 +310,6 @@ func (m *SmartLimitManager) cleanupHistory() {
 			delete(m.limitStatus, containerID)
 		}
 	}
-}
-
-// getLimitStatus 获取容器限速状态
-func (m *SmartLimitManager) getLimitStatus(containerID string) *LimitStatus {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	limitStatus, exists := m.limitStatus[containerID]
-	if !exists {
-		return nil
-	}
-
-	return limitStatus
-}
-
-// 判断是否需要应用限速
-// shouldApplyLimitGraded 分级阈值判断
-func (m *SmartLimitManager) shouldApplyLimitGraded(trend *IOTrend) (bool, *LimitResult) {
-	// 按优先级检查：15分钟 > 30分钟 > 60分钟
-	// 优先使用更短时间窗口的阈值，因为短期高IO更需要立即处理
-	// Todo: 调整算法
-	// 1. avg_with_window < setmax , use avg_with_window
-	// 2. avg_with_window > setmax , use setmax
-
-	// 检查15分钟窗口
-	if m.checkWindowThreshold(trend.ReadIOPS15m, trend.WriteIOPS15m, trend.ReadBPS15m, trend.WriteBPS15m,
-		m.config.SmartLimitIOThreshold15m, m.config.SmartLimitBPSThreshold15m) {
-
-		return true, &LimitResult{
-			TriggeredBy: "15m",
-			ReadIOPS:    m.config.SmartLimitIOPSLimit15m,
-			WriteIOPS:   m.config.SmartLimitIOPSLimit15m,
-			ReadBPS:     m.config.SmartLimitBPSLimit15m,
-			WriteBPS:    m.config.SmartLimitBPSLimit15m,
-			Reason:      m.buildTriggerReason("15m", trend.ReadIOPS15m, trend.WriteIOPS15m, trend.ReadBPS15m, trend.WriteBPS15m),
-		}
-	}
-
-	// 检查30分钟窗口
-	if m.checkWindowThreshold(trend.ReadIOPS30m, trend.WriteIOPS30m, trend.ReadBPS30m, trend.WriteBPS30m,
-		m.config.SmartLimitIOThreshold30m, m.config.SmartLimitBPSThreshold30m) {
-
-		return true, &LimitResult{
-			TriggeredBy: "30m",
-			ReadIOPS:    m.config.SmartLimitIOPSLimit30m,
-			WriteIOPS:   m.config.SmartLimitIOPSLimit30m,
-			ReadBPS:     m.config.SmartLimitBPSLimit30m,
-			WriteBPS:    m.config.SmartLimitBPSLimit30m,
-			Reason:      m.buildTriggerReason("30m", trend.ReadIOPS30m, trend.WriteIOPS30m, trend.ReadBPS30m, trend.WriteBPS30m),
-		}
-	}
-
-	// 检查60分钟窗口
-	if m.checkWindowThreshold(trend.ReadIOPS60m, trend.WriteIOPS60m, trend.ReadBPS60m, trend.WriteBPS60m,
-		m.config.SmartLimitIOThreshold60m, m.config.SmartLimitBPSThreshold60m) {
-
-		return true, &LimitResult{
-			TriggeredBy: "60m",
-			ReadIOPS:    m.config.SmartLimitIOPSLimit60m,
-			WriteIOPS:   m.config.SmartLimitIOPSLimit60m,
-			ReadBPS:     m.config.SmartLimitBPSLimit60m,
-			WriteBPS:    m.config.SmartLimitBPSLimit60m,
-			Reason:      m.buildTriggerReason("60m", trend.ReadIOPS60m, trend.WriteIOPS60m, trend.ReadBPS60m, trend.WriteBPS60m),
-		}
-	}
-
-	return false, nil
-}
-
-// shouldRemoveLimit 判断是否需要解除限速
-func (m *SmartLimitManager) shouldRemoveLimit(trend *IOTrend, limitStatus *LimitStatus) bool {
-	limitStatus.mu.RLock()
-	defer limitStatus.mu.RUnlock()
-
-	// 检查是否达到解除延迟时间
-	removeDelay := time.Duration(m.config.SmartLimitRemoveDelay) * time.Minute
-	if time.Since(limitStatus.AppliedAt) < removeDelay {
-		return false
-	}
-
-	// 检查是否达到检查间隔
-	checkInterval := time.Duration(m.config.SmartLimitRemoveCheckInterval) * time.Minute
-	if time.Since(limitStatus.LastCheckAt) < checkInterval {
-		return false
-	}
-
-	// 根据触发的时间窗口检查IO是否已经降低到安全水平
-	switch limitStatus.TriggeredBy {
-	case "15m":
-		return m.checkRemoveCondition(trend.ReadIOPS15m, trend.WriteIOPS15m, trend.ReadBPS15m, trend.WriteBPS15m)
-	case "30m":
-		return m.checkRemoveCondition(trend.ReadIOPS30m, trend.WriteIOPS30m, trend.ReadBPS30m, trend.WriteBPS30m)
-	case "60m":
-		return m.checkRemoveCondition(trend.ReadIOPS60m, trend.WriteIOPS60m, trend.ReadBPS60m, trend.WriteBPS60m)
-	case "legacy":
-		// 对于legacy模式，检查所有时间窗口
-		return m.checkRemoveCondition(
-			math.Max(trend.ReadIOPS15m, math.Max(trend.ReadIOPS30m, trend.ReadIOPS60m)),
-			math.Max(trend.WriteIOPS15m, math.Max(trend.WriteIOPS30m, trend.WriteIOPS60m)),
-			math.Max(trend.ReadBPS15m, math.Max(trend.ReadBPS30m, trend.ReadBPS60m)),
-			math.Max(trend.WriteBPS15m, math.Max(trend.WriteBPS30m, trend.WriteBPS60m)),
-		)
-	default:
-		return false
-	}
-}
-
-// checkRemoveCondition 检查解除条件
-func (m *SmartLimitManager) checkRemoveCondition(readIOPS, writeIOPS, readBPS, writeBPS float64) bool {
-	// 检查IOPS是否都低于解除阈值
-	if readIOPS > m.config.SmartLimitRemoveThreshold || writeIOPS > m.config.SmartLimitRemoveThreshold {
-		return false
-	}
-
-	// 检查BPS是否都低于解除阈值
-	if readBPS > m.config.SmartLimitRemoveThreshold || writeBPS > m.config.SmartLimitRemoveThreshold {
-		return false
-	}
-
-	return true
-}
-
-// removeSmartLimit 移除限速
-func (m *SmartLimitManager) removeSmartLimit(podName, namespace string, trend *IOTrend, limitStatus *LimitStatus) {
-	// 获取Pod
-	pod, err := m.kubeClient.GetPod(namespace, podName)
-	if err != nil {
-		log.Printf("Failed to get pod %s/%s for removing limit: %v", namespace, podName, err)
-		return
-	}
-
-	// 构建注解
-	annotations := make(map[string]string)
-	for k, v := range pod.Annotations {
-		// 移除限速相关的注解
-		if !strings.HasPrefix(k, m.config.SmartLimitAnnotationPrefix+"/") {
-			annotations[k] = v
-		}
-	}
-
-	// 添加解除限速的标记
-	annotations[m.config.SmartLimitAnnotationPrefix+"/limit-removed"] = "true"
-	annotations[m.config.SmartLimitAnnotationPrefix+"/removed-at"] = time.Now().Format(time.RFC3339)
-	annotations[m.config.SmartLimitAnnotationPrefix+"/removed-reason"] = m.buildRemoveReason(trend, limitStatus)
-
-	// 更新Pod注解
-	pod.Annotations = annotations
-	_, err = m.kubeClient.UpdatePod(pod)
-	if err != nil {
-		log.Printf("Failed to remove smart limit for pod %s/%s: %v", namespace, podName, err)
-		return
-	}
-
-	log.Printf("Removed smart limit from pod %s/%s: %s", namespace, podName, m.buildRemoveReason(trend, limitStatus))
-}
-
-// buildRemoveReason 构建解除限速原因
-func (m *SmartLimitManager) buildRemoveReason(trend *IOTrend, limitStatus *LimitStatus) string {
-	limitStatus.mu.RLock()
-	defer limitStatus.mu.RUnlock()
-
-	var currentValues []string
-
-	switch limitStatus.TriggeredBy {
-	case "15m":
-		currentValues = append(currentValues, fmt.Sprintf("ReadIOPS:%.2f", trend.ReadIOPS15m))
-		currentValues = append(currentValues, fmt.Sprintf("WriteIOPS:%.2f", trend.WriteIOPS15m))
-		currentValues = append(currentValues, fmt.Sprintf("ReadBPS:%.2f", trend.ReadBPS15m))
-		currentValues = append(currentValues, fmt.Sprintf("WriteBPS:%.2f", trend.WriteBPS15m))
-	case "30m":
-		currentValues = append(currentValues, fmt.Sprintf("ReadIOPS:%.2f", trend.ReadIOPS30m))
-		currentValues = append(currentValues, fmt.Sprintf("WriteIOPS:%.2f", trend.WriteIOPS30m))
-		currentValues = append(currentValues, fmt.Sprintf("ReadBPS:%.2f", trend.ReadBPS30m))
-		currentValues = append(currentValues, fmt.Sprintf("WriteBPS:%.2f", trend.WriteBPS30m))
-	case "60m":
-		currentValues = append(currentValues, fmt.Sprintf("ReadIOPS:%.2f", trend.ReadIOPS60m))
-		currentValues = append(currentValues, fmt.Sprintf("WriteIOPS:%.2f", trend.WriteIOPS60m))
-		currentValues = append(currentValues, fmt.Sprintf("ReadBPS:%.2f", trend.ReadBPS60m))
-		currentValues = append(currentValues, fmt.Sprintf("WriteBPS:%.2f", trend.WriteBPS60m))
-	default:
-		currentValues = append(currentValues, "Legacy mode")
-	}
-
-	return fmt.Sprintf("IO已恢复正常[%s], 阈值:%.2f", strings.Join(currentValues, ","), m.config.SmartLimitRemoveThreshold)
-}
-
-// 获取容器限额（无则分配默认值）
-func (m *SmartLimitManager) getOrInitContainerLimit(containerID string) *ContainerLimit {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	limit, exists := m.containerLimits[containerID]
-	if !exists {
-		limit = &ContainerLimit{
-			IOPS: m.config.DefaultIOPSLimit,
-			BPS:  m.config.DefaultBPSLimit,
-		}
-		m.containerLimits[containerID] = limit
-	}
-	// 限额不超过最大值
-	if limit.IOPS > m.config.MaxIOPSLimit {
-		limit.IOPS = m.config.MaxIOPSLimit
-	}
-	if limit.BPS > m.config.MaxBPSLimit {
-		limit.BPS = m.config.MaxBPSLimit
-	}
-	return limit
-}
-
-// shouldUpdateLimit 检查是否需要更新限速值
-func (m *SmartLimitManager) shouldUpdateLimit(currentStatus *LimitStatus, newResult *LimitResult) bool {
-	if newResult == nil || currentStatus.LimitResult == nil {
-		return false
-	}
-
-	// 检查是否触发了不同的时间窗口
-	if currentStatus.TriggeredBy != newResult.TriggeredBy {
-		return true
-	}
-
-	// 检查限速值是否发生变化
-	current := currentStatus.LimitResult
-	if current.ReadIOPS != newResult.ReadIOPS ||
-		current.WriteIOPS != newResult.WriteIOPS ||
-		current.ReadBPS != newResult.ReadBPS ||
-		current.WriteBPS != newResult.WriteBPS {
-		return true
-	}
-
-	return false
-}
-
-// checkWindowThreshold 检查单个时间窗口的阈值
-func (m *SmartLimitManager) checkWindowThreshold(readIOPS, writeIOPS, readBPS, writeBPS, ioThreshold, bpsThreshold float64) bool {
-	// 检查IOPS阈值
-	if readIOPS > ioThreshold || writeIOPS > ioThreshold {
-		return true
-	}
-
-	// 检查BPS阈值
-	if readBPS > bpsThreshold || writeBPS > bpsThreshold {
-		return true
-	}
-
-	return false
-}
-
-// buildTriggerReason 构建触发原因描述
-func (m *SmartLimitManager) buildTriggerReason(window string, readIOPS, writeIOPS, readBPS, writeBPS float64) string {
-	var reasons []string
-
-	if readIOPS > 0 {
-		reasons = append(reasons, fmt.Sprintf("ReadIOPS:%.2f", readIOPS))
-	}
-	if writeIOPS > 0 {
-		reasons = append(reasons, fmt.Sprintf("WriteIOPS:%.2f", writeIOPS))
-	}
-	if readBPS > 0 {
-		reasons = append(reasons, fmt.Sprintf("ReadBPS:%.2f", readBPS))
-	}
-	if writeBPS > 0 {
-		reasons = append(reasons, fmt.Sprintf("WriteBPS:%.2f", writeBPS))
-	}
-
-	return fmt.Sprintf("%s窗口触发[%s]", window, strings.Join(reasons, ","))
-}
-
-// applySmartLimit 应用智能限速
-func (m *SmartLimitManager) applySmartLimit(podName, namespace string, trend *IOTrend) {
-	// 获取Pod
-	pod, err := m.kubeClient.GetPod(namespace, podName)
-	if err != nil {
-		log.Printf("Failed to get pod %s/%s: %v", namespace, podName, err)
-		return
-	}
-
-	// 构建注解
-	annotations := make(map[string]string)
-	for k, v := range pod.Annotations {
-		annotations[k] = v
-	}
-
-	if m.config.SmartLimitAutoIOPS > 0 {
-		annotations[m.config.SmartLimitAnnotationPrefix+"/io-limit"] = strconv.Itoa(m.config.SmartLimitAutoIOPS)
-	}
-
-	if m.config.SmartLimitAutoBPS > 0 {
-		annotations[m.config.SmartLimitAnnotationPrefix+"/bps-limit"] = strconv.Itoa(m.config.SmartLimitAutoBPS)
-	}
-
-	// 添加趋势信息
-	annotations[m.config.SmartLimitAnnotationPrefix+"/trend-read-iops-15m"] = strconv.FormatFloat(trend.ReadIOPS15m, 'f', 2, 64)
-	annotations[m.config.SmartLimitAnnotationPrefix+"/trend-write-iops-15m"] = strconv.FormatFloat(trend.WriteIOPS15m, 'f', 2, 64)
-	annotations[m.config.SmartLimitAnnotationPrefix+"/trend-read-bps-15m"] = strconv.FormatFloat(trend.ReadBPS15m, 'f', 2, 64)
-	annotations[m.config.SmartLimitAnnotationPrefix+"/trend-write-bps-15m"] = strconv.FormatFloat(trend.WriteBPS15m, 'f', 2, 64)
-
-	// 更新Pod注解
-	pod.Annotations = annotations
-	_, err = m.kubeClient.UpdatePod(pod)
-	if err != nil {
-		log.Printf("Failed to update pod annotations for %s/%s: %v", namespace, podName, err)
-		return
-	}
-
-	log.Printf("Applied smart limit to pod %s/%s: IOPS=%d, BPS=%d", namespace, podName, m.config.SmartLimitAutoIOPS, m.config.SmartLimitAutoBPS)
-}
-
-// applySmartLimitWithResult 应用分级智能限速
-func (m *SmartLimitManager) applySmartLimitWithResult(podName, namespace string, trend *IOTrend, limitResult *LimitResult) {
-	// 获取Pod
-	pod, err := m.kubeClient.GetPod(namespace, podName)
-	if err != nil {
-		log.Printf("Failed to get pod %s/%s: %v", namespace, podName, err)
-		return
-	}
-	// 构建注解
-	annotations := make(map[string]string)
-	for k, v := range pod.Annotations {
-		annotations[k] = v
-	}
-	// 获取容器限额
-	containerID := podName + ":" + namespace // 简化，实际应用时可用真实containerID
-	limit := m.getOrInitContainerLimit(containerID)
-
-	// 融合分级限速与全局限额逻辑
-	var readIOPS, writeIOPS, readBPS, writeBPS int
-	if limitResult != nil && (limitResult.ReadIOPS > 0 || limitResult.ReadBPS > 0) {
-		// 分级限速优先，且不超过全局最大
-		readIOPS = min(limitResult.ReadIOPS, m.config.MaxIOPSLimit)
-		writeIOPS = min(limitResult.WriteIOPS, m.config.MaxIOPSLimit)
-		readBPS = min(limitResult.ReadBPS, m.config.MaxBPSLimit)
-		writeBPS = min(limitResult.WriteBPS, m.config.MaxBPSLimit)
-	} else {
-		// 否则用containerLimits
-		readIOPS = min(limit.IOPS, m.config.MaxIOPSLimit)
-		writeIOPS = min(limit.IOPS, m.config.MaxIOPSLimit)
-		readBPS = min(limit.BPS, m.config.MaxBPSLimit)
-		writeBPS = min(limit.BPS, m.config.MaxBPSLimit)
-	}
-
-	prefix := m.config.SmartLimitAnnotationPrefix
-	// 检查当前注解中是否有0值，若有则本轮跳过下发该项
-	if !(annotations[prefix+"/"+annotationkeys.ReadIopsAnnotationKey] == "0") && readIOPS > 0 {
-		annotations[prefix+"/"+annotationkeys.ReadIopsAnnotationKey] = strconv.Itoa(readIOPS)
-	}
-	if !(annotations[prefix+"/"+annotationkeys.WriteIopsAnnotationKey] == "0") && writeIOPS > 0 {
-		annotations[prefix+"/"+annotationkeys.WriteIopsAnnotationKey] = strconv.Itoa(writeIOPS)
-	}
-	if !(annotations[prefix+"/"+annotationkeys.ReadBpsAnnotationKey] == "0") && readBPS > 0 {
-		annotations[prefix+"/"+annotationkeys.ReadBpsAnnotationKey] = strconv.Itoa(readBPS)
-	}
-	if !(annotations[prefix+"/"+annotationkeys.WriteBpsAnnotationKey] == "0") && writeBPS > 0 {
-		annotations[prefix+"/"+annotationkeys.WriteBpsAnnotationKey] = strconv.Itoa(writeBPS)
-	}
-	// 添加触发信息
-	if limitResult != nil {
-		annotations[prefix+"/triggered-by"] = limitResult.TriggeredBy
-		annotations[prefix+"/trigger-reason"] = limitResult.Reason
-	}
-	// 添加趋势信息（略）
-	pod.Annotations = annotations
-	_, err = m.kubeClient.UpdatePod(pod)
-	if err != nil {
-		log.Printf("Failed to update pod annotations for %s/%s: %v", namespace, podName, err)
-		return
-	}
-	log.Printf("Applied smart limit to pod %s/%s: IOPS[%d,%d], BPS[%d,%d]", namespace, podName, readIOPS, writeIOPS, readBPS, writeIOPS)
 }
 
 // updateLimitStatus 更新容器限速状态
