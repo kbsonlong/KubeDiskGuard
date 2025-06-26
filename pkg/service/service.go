@@ -7,6 +7,8 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"KubeDiskGuard/pkg/annotationkeys"
 	"KubeDiskGuard/pkg/cgroup"
@@ -57,12 +59,15 @@ type KubeDiskGuardService struct {
 	runtime    container.Runtime
 	kubeClient kubeclient.IKubeClient
 	smartLimit *smartlimit.SmartLimitManager
+	stopCh     chan struct{}
+	Wg         sync.WaitGroup
 }
 
 // NewKubeDiskGuardService 创建KubeDiskGuardService
 func NewKubeDiskGuardService(cfg *config.Config) (*KubeDiskGuardService, error) {
 	service := &KubeDiskGuardService{
 		Config: cfg,
+		stopCh: make(chan struct{}),
 	}
 
 	if cfg.ContainerRuntime == "auto" {
@@ -385,50 +390,95 @@ func (s *KubeDiskGuardService) Run() error {
 	defer watcher.Stop()
 
 	log.Println("Start watching pod events...")
-	s.watchPodEvents(watcher, podAnnotations)
+
+	s.Wg.Add(1)
+	go func() {
+		defer s.Wg.Done()
+		s.watchPodEvents(watcher, podAnnotations)
+	}()
+
 	return nil
 }
 
 // watchPodEvents 监听Pod事件的内部方法
 func (s *KubeDiskGuardService) watchPodEvents(watcher watch.Interface, podAnnotations map[string]PodAnnotationState) {
-	ch := watcher.ResultChan()
-	for event := range ch {
-		if event.Object == nil {
-			continue
-		}
-		pod, ok := event.Object.(*corev1.Pod)
-		if !ok {
-			continue
+	for {
+		select {
+		case <-s.stopCh:
+			log.Printf("[INFO] watchPodEvents received stop signal, exiting...")
+			// return
+		default:
 		}
 
-		key := pod.Namespace + "/" + pod.Name
-		switch event.Type {
-		case watch.Modified:
-			if !s.ShouldProcessPod(*pod) {
-				continue
-			}
+		ch := watcher.ResultChan()
+	watchLoop:
+		for {
+			select {
+			case <-s.stopCh:
+				log.Printf("[INFO] watchPodEvents received stop signal, exiting...")
+				// return
+			case event, ok := <-ch:
+				if !ok {
+					break watchLoop
+				}
+				if event.Object == nil {
+					continue
+				}
+				pod, ok := event.Object.(*corev1.Pod)
+				if !ok {
+					continue
+				}
 
-			old, exists := podAnnotations[key]
-			newAnn := pod.Annotations
-			readIops, writeIops := ParseIopsLimitFromAnnotations(newAnn, s.Config.ContainerReadIOPSLimit, s.Config.ContainerWriteIOPSLimit, s.Config.SmartLimitAnnotationPrefix)
-			readBps, writeBps := ParseBpsLimitFromAnnotations(newAnn, s.Config.ContainerReadBPSLimit, s.Config.ContainerWriteBPSLimit, s.Config.SmartLimitAnnotationPrefix)
+				key := pod.Namespace + "/" + pod.Name
+				switch event.Type {
+				case watch.Modified:
+					if !s.ShouldProcessPod(*pod) {
+						continue
+					}
 
-			if exists && reflect.DeepEqual(old.Annotations, newAnn) &&
-				old.ReadIops == readIops && old.WriteIops == writeIops &&
-				old.ReadBps == readBps && old.WriteBps == writeBps {
-				continue
-			}
+					old, exists := podAnnotations[key]
+					newAnn := pod.Annotations
+					readIops, writeIops := ParseIopsLimitFromAnnotations(newAnn, s.Config.ContainerReadIOPSLimit, s.Config.ContainerWriteIOPSLimit, s.Config.SmartLimitAnnotationPrefix)
+					readBps, writeBps := ParseBpsLimitFromAnnotations(newAnn, s.Config.ContainerReadBPSLimit, s.Config.ContainerWriteBPSLimit, s.Config.SmartLimitAnnotationPrefix)
 
-			s.processPodContainers(*pod)
-			podAnnotations[key] = PodAnnotationState{
-				Annotations: newAnn,
-				ReadIops:    readIops,
-				WriteIops:   writeIops,
-				ReadBps:     readBps,
-				WriteBps:    writeBps,
+					if exists && reflect.DeepEqual(old.Annotations, newAnn) &&
+						old.ReadIops == readIops && old.WriteIops == writeIops &&
+						old.ReadBps == readBps && old.WriteBps == writeBps {
+						continue
+					}
+
+					s.processPodContainers(*pod)
+					podAnnotations[key] = PodAnnotationState{
+						Annotations: newAnn,
+						ReadIops:    readIops,
+						WriteIops:   writeIops,
+						ReadBps:     readBps,
+						WriteBps:    writeBps,
+					}
+				case watch.Deleted:
+					delete(podAnnotations, key)
+				}
 			}
-		case watch.Deleted:
-			delete(podAnnotations, key)
+		}
+		log.Printf("[WARN] watcher channel closed, will reconnect after 2s")
+		select {
+		case <-s.stopCh:
+			log.Printf("[INFO] watchPodEvents received stop signal, exiting...")
+			return
+		case <-time.After(2 * time.Second):
+		}
+		// 重新创建 watcher
+		var err error
+		watcher, err = s.kubeClient.WatchNodePods()
+		if err != nil {
+			log.Printf("[ERROR] failed to recreate watcher: %v, will retry after 5s", err)
+			select {
+			case <-s.stopCh:
+				log.Printf("[INFO] watchPodEvents received stop signal, exiting...")
+				return
+			case <-time.After(5 * time.Second):
+			}
+			continue
 		}
 	}
 }
@@ -465,6 +515,7 @@ func NewKubeDiskGuardServiceWithKubeClient(cfg *config.Config, kc kubeclient.IKu
 	service := &KubeDiskGuardService{
 		Config:     cfg,
 		kubeClient: kc,
+		stopCh:     make(chan struct{}),
 	}
 
 	var err error
@@ -550,4 +601,57 @@ type PodAnnotationState struct {
 	WriteIops   int
 	ReadBps     int
 	WriteBps    int
+}
+
+// Stop 优雅退出watch
+func (s *KubeDiskGuardService) Stop() {
+	select {
+	case <-s.stopCh:
+		// 已关闭
+		return
+	default:
+		close(s.stopCh)
+	}
+}
+
+// ReloadConfig 热重载配置
+func (s *KubeDiskGuardService) ReloadConfig(newConfig *config.Config) error {
+	log.Printf("[INFO] 开始热重载配置...")
+
+	// 更新服务配置
+	s.Config = newConfig
+
+	// 重新初始化智能限速管理器
+	if newConfig.SmartLimitEnabled {
+		if s.smartLimit == nil {
+			// 如果之前没有启用，现在启用
+			cgroupMgr := cgroup.NewManager(newConfig.CgroupVersion)
+			s.smartLimit = smartlimit.NewSmartLimitManager(newConfig, s.kubeClient, cgroupMgr)
+			s.smartLimit.Start()
+			log.Printf("[INFO] 智能限速管理器已启动")
+		} else {
+			// 如果已经存在，更新配置
+			s.smartLimit.UpdateConfig(newConfig)
+			log.Printf("[INFO] 智能限速管理器配置已更新")
+		}
+	} else {
+		// 如果禁用了智能限速
+		if s.smartLimit != nil {
+			s.smartLimit.Stop()
+			s.smartLimit = nil
+			log.Printf("[INFO] 智能限速管理器已停止")
+		}
+	}
+
+	// 重新处理现有容器以应用新配置
+	go func() {
+		if err := s.ProcessExistingContainers(); err != nil {
+			log.Printf("[WARN] 重新处理现有容器时出错: %v", err)
+		} else {
+			log.Printf("[INFO] 现有容器已重新处理完成")
+		}
+	}()
+
+	log.Printf("[INFO] 配置热重载完成")
+	return nil
 }

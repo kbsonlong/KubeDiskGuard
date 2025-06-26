@@ -1,0 +1,39 @@
+{
+    "container_iops_limit": 1000,
+    "container_read_iops_limit": 500,
+    "container_write_iops_limit": 500,
+    "container_bps_limit": 104857600,
+    "container_read_bps_limit": 52428800,
+    "container_write_bps_limit": 52428800,
+    "smart_limit_enabled": true,
+    "smart_limit_monitor_interval": 30,
+    "smart_limit_history_window": 10,
+    "smart_limit_annotation_prefix": "kubediskguard.io",
+    "smart_limit_windows": [
+        {
+            "duration": 15,
+            "iops_threshold": 800,
+            "bps_threshold": 83886080
+        },
+        {
+            "duration": 30,
+            "iops_threshold": 600,
+            "bps_threshold": 62914560
+        },
+        {
+            "duration": 60,
+            "iops_threshold": 400,
+            "bps_threshold": 41943040
+        }
+    ],
+    "exclude_keywords": ["pause", "kube-proxy", "istio-proxy"],
+    "exclude_namespaces": ["kube-system", "monitoring"],
+    "exclude_label_selector": "app=system,env in (prod,staging),!debug",
+    "data_mount": "/var/lib/docker",
+    "container_runtime": "auto",
+    "cgroup_version": "auto",
+    "kubelet_host": "localhost",
+    "kubelet_port": 10250,
+    "kubelet_skip_verify": false,
+    "smart_limit_use_kubelet_api": true
+} 

@@ -1,0 +1,76 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: kubediskguard
+  namespace: kube-system
+  labels:
+    app: kubediskguard
+spec:
+  selector:
+    matchLabels:
+      app: kubediskguard
+  template:
+    metadata:
+      labels:
+        app: kubediskguard
+    spec:
+      serviceAccountName: kubediskguard
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      containers:
+        - name: kubediskguard
+          image: your-repo/iops-limit-service:latest
+          imagePullPolicy: IfNotPresent
+          args:
+            - "-metrics-addr=:2112"
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: CONFIG_FILE_PATH
+              value: /etc/kubediskguard/config.json
+          volumeMounts:
+            - name: config
+              mountPath: /etc/kubediskguard/config.json
+              subPath: config.json
+              readOnly: true
+            - name: sock
+              mountPath: /run/containerd/containerd.sock
+              readOnly: true
+            - name: sys-fs-cgroup
+              mountPath: /sys/fs/cgroup
+            - name: proc
+              mountPath: /proc
+            - name: dev
+              mountPath: /dev
+            - name: data
+              mountPath: /data
+          ports:
+            - containerPort: 2112
+              name: metrics
+              protocol: TCP
+          securityContext:
+            privileged: true
+            runAsUser: 0
+            runAsGroup: 0
+      volumes:
+        - name: config
+          configMap:
+            name: kubediskguard-config
+        - name: sock
+          hostPath:
+            path: /var/run/docker.sock
+            type: Socket
+        - name: sys-fs-cgroup
+          hostPath:
+            path: /sys/fs/cgroup
+        - name: proc
+          hostPath:
+            path: /proc
+        - name: dev
+          hostPath:
+            path: /dev
+        - name: data
+          hostPath:
+            path: /data

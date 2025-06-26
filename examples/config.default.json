@@ -47,8 +47,8 @@
     {
       "_comment": "1分钟窗口配置",
       "duation": 1,
-      "iops_threshold": 500,
-      "bps_threshold": 20971520
+      "iops_threshold": 1000,
+      "bps_threshold": 52428800
     },
     {
       "_comment": "5分钟窗口配置",
@@ -59,8 +59,8 @@
     {
       "_comment": "30分钟窗口配置",
       "duation": 30,
-      "iops_threshold": 1000,
-      "bps_threshold": 52428800
+      "iops_threshold": 500,
+      "bps_threshold": 20971520
     }
   ],
   

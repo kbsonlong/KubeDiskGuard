@@ -5,6 +5,8 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
@@ -77,10 +79,27 @@ func main() {
 
 	// 添加服务重新配置的回调
 	configWatcher.AddUpdateCallback(func(newCfg *config.Config) {
-		// 这里可以实现服务的热重载逻辑
-		// 例如：更新服务内部的配置引用
-		log.Printf("[INFO] 服务配置更新通知已发送")
+		// 实现服务的热重载逻辑
+		log.Printf("[INFO] 检测到配置更新，开始热重载服务...")
+
+		// 调用服务的热重载方法
+		if err := svc.ReloadConfig(newCfg); err != nil {
+			log.Printf("[ERROR] 服务热重载失败: %v", err)
+		} else {
+			log.Printf("[INFO] 服务热重载成功完成")
+		}
 	})
+
+	// 信号监听
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		sig := <-sigCh
+		log.Printf("[INFO] Received signal: %v, shutting down...", sig)
+		svc.Stop()
+		svc.Wg.Wait() // 等待所有后台任务退出
+		os.Exit(0)
+	}()
 
 	if *resetAll {
 		if err := svc.ResetAllContainersIOPSLimit(); err != nil {
@@ -90,8 +109,8 @@ func main() {
 		os.Exit(0)
 	}
 
-	// 运行服务
+	// 启动主服务（如svc.Run()为阻塞可直接调用，否则用go）
 	if err := svc.Run(); err != nil {
-		log.Fatalf("Service failed: %v", err)
+		log.Fatalf("Service exited with error: %v", err)
 	}
 }

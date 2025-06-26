@@ -20,6 +20,7 @@
 - **kubelet API 集成**: 减少API Server压力，提高性能和可靠性, 通过 kubelet API 获取 cAdvisor 数据，简化复杂度
 - **统一数据源**: 智能限速和监控都使用 kubelet API 作为数据源
 - **支持多维度过滤**:（关键字、命名空间、正则、K8s label selector）
+- **配置热重载**: 支持配置文件动态更新，无需重启服务即可应用新配置
 
 
 ## 架构图
@@ -290,6 +291,81 @@ env:
 | `kubelet_port` | 10250 | kubelet 端口 |
 | `smart_limit_use_kubelet_api` | true | 是否使用 kubelet API |
 | `kubelet_skip_verify` | false | 是否跳过证书验证 |
+
+### 7. 配置热重载
+
+KubeDiskGuard 支持配置文件热重载功能，允许在不重启服务的情况下动态更新配置。
+
+#### 启用配置文件监听
+
+设置环境变量 `CONFIG_FILE_PATH` 指向配置文件：
+
+```bash
+export CONFIG_FILE_PATH="/path/to/config.json"
+```
+
+#### 配置文件格式
+
+支持 JSON 和 YAML 格式：
+
+```json
+{
+    "container_iops_limit": 1000,
+    "container_read_iops_limit": 500,
+    "container_write_iops_limit": 500,
+    "smart_limit_enabled": true,
+    "smart_limit_monitor_interval": 30,
+    "exclude_keywords": ["pause", "kube-proxy"],
+    "exclude_namespaces": ["kube-system"]
+}
+```
+
+#### 动态更新配置
+
+修改配置文件后，服务会自动检测变化并应用新配置：
+
+```bash
+# 编辑配置文件
+vim /path/to/config.json
+
+# 服务会自动检测并应用新配置
+```
+
+#### 热重载测试
+
+使用提供的测试脚本验证热重载功能：
+
+```bash
+# 设置必要的环境变量
+export NODE_NAME="your-node-name"
+
+# 运行测试
+./scripts/test-hot-reload.sh
+```
+
+#### 支持热重载的配置项
+
+- **IOPS/BPS 限制配置**: 所有容器 IO 限制相关配置
+- **智能限速配置**: 智能限速开关、监控间隔、阈值等
+- **排除规则配置**: 关键字、命名空间、标签选择器
+- **监控配置**: 监控间隔、历史窗口等
+
+#### 热重载日志
+
+热重载过程中会输出详细的日志信息：
+
+```
+[INFO] 检测到配置文件变化，重新加载配置
+[INFO] 配置已更新: {"container_iops_limit":2000,...}
+[INFO] 检测到配置更新，开始热重载服务...
+[INFO] 开始热重载配置...
+[INFO] 智能限速管理器配置已更新
+[INFO] 现有容器已重新处理完成
+[INFO] 配置热重载完成
+[INFO] 服务热重载成功完成
+```
+
+详细的热重载功能说明请参考：[热重载功能指南](./docs/HOT_RELOAD_GUIDE.md)
 
 ## 监控与调试
 

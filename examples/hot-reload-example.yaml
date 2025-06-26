@@ -1,0 +1,56 @@
+# KubeDiskGuard 热重载配置示例 (YAML格式)
+# 支持动态更新，无需重启服务
+
+# 容器IO限制配置
+container_iops_limit: 1000
+container_read_iops_limit: 500
+container_write_iops_limit: 500
+container_bps_limit: 104857600  # 100MB/s
+container_read_bps_limit: 52428800   # 50MB/s
+container_write_bps_limit: 52428800  # 50MB/s
+
+# 智能限速配置
+smart_limit_enabled: true
+smart_limit_monitor_interval: 30  # 30秒监控间隔
+smart_limit_history_window: 10    # 10分钟历史窗口
+smart_limit_annotation_prefix: "kubediskguard.io"
+
+# 智能限速监控窗口配置
+smart_limit_windows:
+  - duration: 15      # 15分钟窗口
+    iops_threshold: 800
+    bps_threshold: 83886080  # 80MB/s
+  - duration: 30      # 30分钟窗口
+    iops_threshold: 600
+    bps_threshold: 62914560  # 60MB/s
+  - duration: 60      # 60分钟窗口
+    iops_threshold: 400
+    bps_threshold: 41943040  # 40MB/s
+
+# 排除规则配置
+exclude_keywords:
+  - "pause"
+  - "kube-proxy"
+  - "istio-proxy"
+  - "psmdb"
+  - "koordinator"
+  - "apisix"
+
+exclude_namespaces:
+  - "kube-system"
+  - "monitoring"
+  - "logging"
+
+# K8s标签选择器过滤
+exclude_label_selector: "app=system,env in (prod,staging),!debug"
+
+# 系统配置
+data_mount: "/var/lib/docker"
+container_runtime: "auto"  # 自动检测
+cgroup_version: "auto"     # 自动检测
+
+# kubelet API配置
+kubelet_host: "localhost"
+kubelet_port: 10250
+kubelet_skip_verify: false
+smart_limit_use_kubelet_api: true 

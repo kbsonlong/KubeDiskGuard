@@ -340,3 +340,41 @@ func (m *SmartLimitManager) updateLimitStatus(containerID, podName, namespace st
 	limitStatus.AppliedAt = time.Now()
 	limitStatus.LastCheckAt = time.Now()
 }
+
+// UpdateConfig 更新配置（热重载支持）
+func (m *SmartLimitManager) UpdateConfig(newConfig *config.Config) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	log.Printf("[SmartLimit] 更新智能限速配置...")
+
+	// 检查监控间隔是否发生变化
+	oldInterval := m.config.SmartLimitMonitorInterval
+	newInterval := newConfig.SmartLimitMonitorInterval
+
+	// 更新配置
+	m.config = newConfig
+
+	// 如果监控间隔发生变化，需要重启监控循环
+	if oldInterval != newInterval {
+		log.Printf("[SmartLimit] 监控间隔从 %d 秒变更为 %d 秒，需要重启监控循环", oldInterval, newInterval)
+		// 注意：这里只是标记需要重启，实际的重启逻辑在monitorLoop中处理
+		// 由于monitorLoop是阻塞的，我们通过关闭stopCh来触发重启
+		select {
+		case <-m.stopCh:
+			// 已经关闭，重新创建
+			m.stopCh = make(chan struct{})
+		default:
+			// 关闭当前循环
+			close(m.stopCh)
+			// 重新创建stopCh
+			m.stopCh = make(chan struct{})
+		}
+
+		// 重新启动监控循环
+		go m.monitorLoop()
+		log.Printf("[SmartLimit] 监控循环已重启")
+	}
+
+	log.Printf("[SmartLimit] 智能限速配置已更新")
+}
