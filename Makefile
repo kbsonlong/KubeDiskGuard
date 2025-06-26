@@ -49,9 +49,9 @@ docker-push: ## 推送 Docker 镜像到仓库
 docker-build-push: docker-build docker-push ## 构建并推送 Docker 镜像
 
 .PHONY: docker-buildx
-docker-buildx: build-multiarch ## 多架构Docker镜像构建
+docker-buildx: ## 多架构Docker镜像构建
 	@echo "使用buildx构建多架构镜像..."
-	docker buildx build --platform linux/amd64,linux/arm64 --build-arg VERSION=Version=$(VERSION_FULL) --build-arg GitCommit=$(GIT_COMMIT) --build-arg BuildTime=$(BUILD_TIME) -t $(FULL_IMAGE_NAME)-amd64 --push .
+	docker buildx build --platform linux/amd64,linux/arm64 --build-arg VERSION=Version=$(VERSION_FULL) --build-arg GitCommit=$(GIT_COMMIT) --build-arg BuildTime=$(BUILD_TIME) -t $(FULL_IMAGE_NAME) --push .
 
 .PHONY: run
 run: build-local ## 本地运行服务
