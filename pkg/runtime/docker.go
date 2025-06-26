@@ -24,7 +24,7 @@ type DockerRuntime struct {
 func NewDockerRuntime(config *config.Config) (*DockerRuntime, error) {
 	cli, err := client.NewClientWithOpts(
 		client.WithHost("unix://"+config.ContainerSocketPath),
-		client.WithVersion("1.41"),
+		client.WithVersion(config.DockerClientVersion),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create docker client: %v", err)

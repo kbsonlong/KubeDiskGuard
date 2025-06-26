@@ -36,6 +36,7 @@ data:
       "exclude_keywords": ["pause", "kube-proxy", "istio-proxy"],
       "exclude_namespaces": ["kube-system", "monitoring"],
       "exclude_label_selector": "app=system,env in (prod,staging),!debug",
+      "docker_client_version": "1.39",
       "data_mount": "/data"
       "container_runtime": "auto",
       "cgroup_version": "auto",

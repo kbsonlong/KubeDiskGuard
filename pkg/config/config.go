@@ -31,6 +31,7 @@ type Config struct {
 	ContainerRuntime        string   `json:"container_runtime"`
 	CgroupVersion           string   `json:"cgroup_version"`
 	ContainerSocketPath     string   `json:"container_socket_path,omitempty"` // 可选字段，默认为空
+	DockerClientVersion     string   `json:"docker_client_version,omitempty"` // 可选字段，默认为空
 	// kubelet API配置
 	KubeletHost       string `json:"kubelet_host,omitempty"` // kubelet主机地址
 	KubeletPort       string `json:"kubelet_port,omitempty"` // kubelet端口
@@ -69,6 +70,7 @@ func GetDefaultConfig() *Config {
 		ContainerRuntime:              "auto",
 		CgroupVersion:                 "auto",
 		ContainerSocketPath:           "/run/containerd/containerd.sock",
+		DockerClientVersion:           "1.41",
 		KubeletHost:                   "localhost",
 		KubeletPort:                   "10250",
 		KubeConfigPath:                "",
