@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.4
 
 # 构建阶段
-FROM --platform=$BUILDPLATFORM golang:1.21-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.22-alpine AS builder
 ARG TARGETOS
 ARG TARGETARCH
 ARG VERSION=dev
