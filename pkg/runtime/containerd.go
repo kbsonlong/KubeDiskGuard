@@ -100,7 +100,7 @@ func (c *ContainerdRuntime) SetLimits(container *container.ContainerInfo, riops,
 	if err != nil {
 		return err
 	}
-	cgroupPath, err := c.getCgroupPath(container.ID, container.CgroupParent)
+	cgroupPath, err := c.getCgroupPath(container.CgroupParent)
 	if err != nil {
 		return fmt.Errorf("failed to get cgroup path for container %s: %v", container.ID, err)
 	}
@@ -113,7 +113,7 @@ func (c *ContainerdRuntime) ResetLimits(container *container.ContainerInfo) erro
 	if err != nil {
 		return err
 	}
-	cgroupPath, err := c.getCgroupPath(container.ID, container.CgroupParent)
+	cgroupPath, err := c.getCgroupPath(container.CgroupParent)
 	if err != nil {
 		return fmt.Errorf("failed to get cgroup path for container %s: %v", container.ID, err)
 	}
@@ -121,7 +121,7 @@ func (c *ContainerdRuntime) ResetLimits(container *container.ContainerInfo) erro
 }
 
 // getCgroupPath 通过containerd API获取容器的cgroup路径
-func (c *ContainerdRuntime) getCgroupPath(containerID string, cgroupsPath string) (string, error) {
+func (c *ContainerdRuntime) getCgroupPath(cgroupsPath string) (string, error) {
 	// 根据cgroup版本和systemd管理模式构建完整路径
 	if c.config.CgroupVersion == "v1" {
 		// cgroup v1: 需要指定子系统路径
