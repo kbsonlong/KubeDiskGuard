@@ -92,7 +92,7 @@ func NewKubeDiskGuardService(cfg *config.Config) (*KubeDiskGuardService, error) 
 	if nodeName == "" {
 		return nil, fmt.Errorf("NODE_NAME env is required")
 	}
-	kubeClient, err := kubeclient.NewKubeClient(nodeName, cfg.KubeConfigPath)
+	kubeClient, err := kubeclient.NewKubeClientWithConfig(nodeName, cfg.KubeConfigPath, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create kubeclient: %v", err)
 	}

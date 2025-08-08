@@ -88,37 +88,70 @@ type PodReference struct {
 
 // newKubeletHTTPClient 创建用于与Kubelet通信的HTTP客户端
 func (k *KubeClient) newKubeletHTTPClient() (*http.Client, string, error) {
+	// 1. 读取认证 token（如果使用 token 认证）
 	var token string
 	tokenPath := k.KubeletTokenPath
 	if tokenPath == "" {
 		tokenPath = k.SATokenPath
 	}
 	if tokenPath != "" {
-		if b, err := os.ReadFile(tokenPath); err == nil {
-			token = strings.TrimSpace(string(b))
+		if tokenBytes, err := os.ReadFile(tokenPath); err == nil {
+			token = strings.TrimSpace(string(tokenBytes))
+			fmt.Printf("[KubeClient] Using ServiceAccount token authentication from: %s\n", tokenPath)
+		} else {
+			fmt.Printf("[KubeClient] Warning: failed to read token from %s: %v\n", tokenPath, err)
 		}
 	}
 
+	// 2. 配置 TLS
 	tlsConfig := &tls.Config{
 		InsecureSkipVerify: k.KubeletSkipVerify,
 	}
 
+	// 设置 ServerName 以匹配证书
+	if k.KubeletServerName != "" {
+		tlsConfig.ServerName = k.KubeletServerName
+		fmt.Printf("[KubeClient] Using custom ServerName: %s\n", k.KubeletServerName)
+	} else if k.KubeletHost == "localhost" {
+		// Kind 集群的特殊处理
+		tlsConfig.ServerName = "kind-control-plane"
+		fmt.Printf("[KubeClient] Using Kind cluster ServerName: kind-control-plane\n")
+	} else {
+		tlsConfig.ServerName = k.KubeletHost
+		fmt.Printf("[KubeClient] Using default ServerName: %s\n", k.KubeletHost)
+	}
+
+	// 3. 加载客户端证书（如果使用证书认证）
+	if k.KubeletClientCert != "" && k.KubeletClientKey != "" {
+		clientCert, err := tls.LoadX509KeyPair(k.KubeletClientCert, k.KubeletClientKey)
+		if err != nil {
+			return nil, "", fmt.Errorf("failed to load client certificate: %v", err)
+		}
+		tlsConfig.Certificates = []tls.Certificate{clientCert}
+		fmt.Printf("[KubeClient] Using client certificate authentication\n")
+		fmt.Printf("[KubeClient] Client Cert: %s\n", k.KubeletClientCert)
+		fmt.Printf("[KubeClient] Client Key: %s\n", k.KubeletClientKey)
+	}
+
+	// 4. 加载 CA 证书
 	if k.KubeletCAPath != "" && !k.KubeletSkipVerify {
 		if caCert, err := os.ReadFile(k.KubeletCAPath); err == nil {
 			caCertPool := x509.NewCertPool()
 			if caCertPool.AppendCertsFromPEM(caCert) {
 				tlsConfig.RootCAs = caCertPool
 				tlsConfig.InsecureSkipVerify = false
+				fmt.Printf("[KubeClient] Using CA certificate from: %s\n", k.KubeletCAPath)
+			} else {
+				fmt.Printf("[KubeClient] Warning: failed to parse CA certificate from %s\n", k.KubeletCAPath)
 			}
+		} else {
+			fmt.Printf("[KubeClient] Warning: failed to read CA cert from %s: %v\n", k.KubeletCAPath, err)
 		}
-	}
-	if k.KubeletClientCert != "" && k.KubeletClientKey != "" {
-		cert, err := tls.LoadX509KeyPair(k.KubeletClientCert, k.KubeletClientKey)
-		if err == nil {
-			tlsConfig.Certificates = []tls.Certificate{cert}
-		}
+	} else if k.KubeletSkipVerify {
+		fmt.Printf("[KubeClient] Warning: TLS verification is disabled (InsecureSkipVerify=true)\n")
 	}
 
+	// 5. 创建 HTTP 客户端
 	client := &http.Client{
 		Timeout: 30 * time.Second,
 		Transport: &http.Transport{
@@ -130,38 +163,53 @@ func (k *KubeClient) newKubeletHTTPClient() (*http.Client, string, error) {
 }
 
 func (k *KubeClient) doKubeletRequest(path string) ([]byte, error) {
+	// 1. 创建 HTTP 客户端和获取 token
 	client, token, err := k.newKubeletHTTPClient()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to create HTTP client: %v", err)
 	}
 
+	// 2. 构建请求 URL
 	url := fmt.Sprintf("https://%s:%s%s", k.KubeletHost, k.KubeletPort, path)
+	fmt.Printf("[KubeClient] Making request to: %s\n", url)
+
+	// 3. 创建 HTTP 请求
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %v", err)
 	}
 
+	// 4. 设置认证头
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
+		fmt.Printf("[KubeClient] Request using Bearer token authentication\n")
+	} else if k.KubeletClientCert != "" && k.KubeletClientKey != "" {
+		fmt.Printf("[KubeClient] Request using client certificate authentication\n")
+	} else {
+		fmt.Printf("[KubeClient] Warning: No authentication method configured\n")
 	}
 	req.Header.Set("Accept", "application/json")
 
+	// 5. 执行请求
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to perform request to %s: %v", path, err)
 	}
 	defer resp.Body.Close()
 
+	// 6. 检查响应状态
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("failed request to %s, status: %d, body: %s", path, resp.StatusCode, string(body))
+		return nil, fmt.Errorf("request to %s failed with status %d: %s", path, resp.StatusCode, string(body))
 	}
 
+	// 7. 读取响应体
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read response body from %s: %v", path, err)
+		return nil, fmt.Errorf("failed to read response body: %v", err)
 	}
 
+	fmt.Printf("[KubeClient] Successfully received response from %s (size: %d bytes)\n", path, len(body))
 	return body, nil
 }
 
@@ -202,6 +250,17 @@ func (k *KubeClient) GetCadvisorMetrics() (string, error) {
 		return "", err
 	}
 	return string(body), nil
+}
+
+// TestKubeletConnection 测试 kubelet 连接
+func (k *KubeClient) TestKubeletConnection() error {
+	_, err := k.doKubeletRequest("/healthz")
+	if err != nil {
+		return fmt.Errorf("kubelet health check failed: %v", err)
+	}
+
+	fmt.Printf("[KubeClient] ✓ kubelet 连接测试成功\n")
+	return nil
 }
 
 // ParseCadvisorMetrics 解析cAdvisor指标

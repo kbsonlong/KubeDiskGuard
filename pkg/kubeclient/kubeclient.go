@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"KubeDiskGuard/pkg/cadvisor"
+	"KubeDiskGuard/pkg/config"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -30,7 +31,9 @@ type KubeClient struct {
 	KubeletClientCert string
 	KubeletClientKey  string
 	KubeletTokenPath  string
+	KubeletServerName string
 	SATokenPath       string
+	RestConfig        *rest.Config // 保存 kubeconfig 配置，用于提取认证信息
 	cadvisorCalc      *cadvisor.Calculator
 }
 
@@ -42,6 +45,7 @@ type IKubeClient interface {
 	UpdatePod(pod *corev1.Pod) (*corev1.Pod, error)
 	GetNodeSummary() (*NodeSummary, error)
 	GetCadvisorMetrics() (string, error)
+	TestKubeletConnection() error
 	ParseCadvisorMetrics(metrics string) (*cadvisor.CadvisorMetrics, error)
 	GetCadvisorIORate(containerID string, window time.Duration) (*cadvisor.IORate, error)
 	GetCadvisorAverageIORate(containerID string, windows []time.Duration) (*cadvisor.IORate, error)
@@ -54,7 +58,105 @@ type IKubeClient interface {
 // 确保KubeClient实现IKubeClient
 var _ IKubeClient = (*KubeClient)(nil)
 
-// NewKubeClient 创建KubeClient，nodeName必须由参数传入
+// NewKubeClientWithConfig 创建KubeClient，使用配置参数
+func NewKubeClientWithConfig(nodeName, kubeconfigPath string, cfg *config.Config) (*KubeClient, error) {
+	if nodeName == "" {
+		return nil, fmt.Errorf("nodeName is required, please set NODE_NAME env")
+	}
+	var restConfig *rest.Config
+	var err error
+
+	if kubeconfigPath != "" {
+		restConfig, err = clientcmd.BuildConfigFromFlags("", kubeconfigPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load kubeconfig: %v", err)
+		}
+	} else {
+		restConfig, err = rest.InClusterConfig()
+		if err != nil {
+			// fallback to KUBECONFIG env
+			if envPath := os.Getenv("KUBECONFIG"); envPath != "" {
+				restConfig, err = clientcmd.BuildConfigFromFlags("", envPath)
+				if err != nil {
+					return nil, fmt.Errorf("failed to load kubeconfig from env: %v", err)
+				}
+			} else {
+				return nil, fmt.Errorf("failed to get in-cluster config: %v", err)
+			}
+		}
+	}
+
+	clientset, err := kubernetes.NewForConfig(restConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create kubernetes client: %v", err)
+	}
+
+	// 使用配置参数，如果为空则使用默认值
+	kubeletHost := cfg.KubeletHost
+	if kubeletHost == "" {
+		kubeletHost = "localhost"
+	}
+	kubeletPort := cfg.KubeletPort
+	if kubeletPort == "" {
+		kubeletPort = "10250"
+	}
+
+	// ServiceAccount Token 路径
+	saTokenPath := "/var/run/secrets/kubernetes.io/serviceaccount/token"
+	if cfg.KubeletTokenPath != "" {
+		saTokenPath = cfg.KubeletTokenPath
+	}
+	caPath := "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+	if cfg.KubeletCAPath != "" {
+		caPath = cfg.KubeletCAPath
+	}
+
+	// 从 kubeconfig 中提取客户端证书信息
+	var clientCertPath, clientKeyPath string
+	if restConfig.CertFile != "" && restConfig.KeyFile != "" {
+		clientCertPath = restConfig.CertFile
+		clientKeyPath = restConfig.KeyFile
+	}
+	// 如果配置中有证书数据，写入临时文件
+	if restConfig.CertData != nil && restConfig.KeyData != nil {
+		clientCertPath = "/tmp/kubelet-client.crt"
+		clientKeyPath = "/tmp/kubelet-client.key"
+		if err := os.WriteFile(clientCertPath, restConfig.CertData, 0600); err != nil {
+			return nil, fmt.Errorf("failed to write client cert: %v", err)
+		}
+		if err := os.WriteFile(clientKeyPath, restConfig.KeyData, 0600); err != nil {
+			return nil, fmt.Errorf("failed to write client key: %v", err)
+		}
+	}
+
+	// 从 kubeconfig 中提取 CA 证书信息
+	if restConfig.CAData != nil {
+		caPath = "/tmp/kubelet-ca.crt"
+		if err := os.WriteFile(caPath, restConfig.CAData, 0644); err != nil {
+			return nil, fmt.Errorf("failed to write CA cert: %v", err)
+		}
+	} else if restConfig.CAFile != "" {
+		caPath = restConfig.CAFile
+	}
+
+	return &KubeClient{
+		Clientset:         clientset,
+		NodeName:          nodeName,
+		KubeletHost:       kubeletHost,
+		KubeletPort:       kubeletPort,
+		KubeletSkipVerify: cfg.KubeletSkipVerify,
+		KubeletCAPath:     caPath,
+		KubeletClientCert: clientCertPath,
+		KubeletClientKey:  clientKeyPath,
+		KubeletTokenPath:  cfg.KubeletTokenPath,
+		KubeletServerName: cfg.KubeletServerName,
+		SATokenPath:       saTokenPath,
+		RestConfig:        restConfig,
+		cadvisorCalc:      cadvisor.NewCalculator(),
+	}, nil
+}
+
+// NewKubeClient 创建KubeClient，nodeName必须由参数传入（兼容性函数）
 func NewKubeClient(nodeName, kubeconfigPath string) (*KubeClient, error) {
 	if nodeName == "" {
 		return nil, fmt.Errorf("nodeName is required, please set NODE_NAME env")
@@ -110,6 +212,38 @@ func NewKubeClient(nodeName, kubeconfigPath string) (*KubeClient, error) {
 	clientCert := os.Getenv("KUBELET_CLIENT_CERT_PATH")
 	clientKey := os.Getenv("KUBELET_CLIENT_KEY_PATH")
 	tokenPath := os.Getenv("KUBELET_TOKEN_PATH")
+	serverName := os.Getenv("KUBELET_SERVER_NAME")
+
+	// 从 kubeconfig 中提取客户端证书信息（如果环境变量未设置）
+	if clientCert == "" && clientKey == "" {
+		if config.CertFile != "" && config.KeyFile != "" {
+			clientCert = config.CertFile
+			clientKey = config.KeyFile
+		}
+		// 如果配置中有证书数据，写入临时文件
+		if config.CertData != nil && config.KeyData != nil {
+			clientCert = "/tmp/kubelet-client.crt"
+			clientKey = "/tmp/kubelet-client.key"
+			if err := os.WriteFile(clientCert, config.CertData, 0600); err != nil {
+				return nil, fmt.Errorf("failed to write client cert: %v", err)
+			}
+			if err := os.WriteFile(clientKey, config.KeyData, 0600); err != nil {
+				return nil, fmt.Errorf("failed to write client key: %v", err)
+			}
+		}
+	}
+
+	// 从 kubeconfig 中提取 CA 证书信息（如果环境变量未设置）
+	if caPath == "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt" {
+		if config.CAData != nil {
+			caPath = "/tmp/kubelet-ca.crt"
+			if err := os.WriteFile(caPath, config.CAData, 0644); err != nil {
+				return nil, fmt.Errorf("failed to write CA cert: %v", err)
+			}
+		} else if config.CAFile != "" {
+			caPath = config.CAFile
+		}
+	}
 
 	return &KubeClient{
 		Clientset:         clientset,
@@ -121,7 +255,9 @@ func NewKubeClient(nodeName, kubeconfigPath string) (*KubeClient, error) {
 		KubeletClientCert: clientCert,
 		KubeletClientKey:  clientKey,
 		KubeletTokenPath:  tokenPath,
+		KubeletServerName: serverName,
 		SATokenPath:       saTokenPath,
+		RestConfig:        config,
 		cadvisorCalc:      cadvisor.NewCalculator(),
 	}, nil
 }

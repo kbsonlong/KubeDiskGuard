@@ -55,10 +55,11 @@ type Config struct {
 	SmartLimitBPSLimit60m     int     `json:"smart_limit_bps_limit_60m"`     // 60分钟限速BPS值
 
 	// kubelet API配置
-	KubeletTokenPath        string `json:"kubelet_token_path,omitempty"`  // kubelet token路径
-	KubeletCAPath           string `json:"kubelet_ca_path,omitempty"`     // kubelet CA证书路径
-	KubeletSkipVerify       bool   `json:"kubelet_skip_verify,omitempty"` // 是否跳过kubelet证书验证
-	SmartLimitUseKubeletAPI bool   `json:"smart_limit_use_kubelet_api"`   // 是否使用kubelet API获取IO数据
+KubeletTokenPath        string `json:"kubelet_token_path,omitempty"`  // kubelet token路径
+KubeletCAPath           string `json:"kubelet_ca_path,omitempty"`     // kubelet CA证书路径
+KubeletServerName       string `json:"kubelet_server_name,omitempty"` // kubelet TLS服务器名称
+KubeletSkipVerify       bool   `json:"kubelet_skip_verify,omitempty"` // 是否跳过kubelet证书验证
+SmartLimitUseKubeletAPI bool   `json:"smart_limit_use_kubelet_api"`   // 是否使用kubelet API获取IO数据
 
 	// 解除限速配置
 	SmartLimitRemoveThreshold     float64 `json:"smart_limit_remove_threshold"`      // 解除限速阈值（相对值）
@@ -250,6 +251,10 @@ func LoadFromEnv(config *Config) {
 
 	if val := os.Getenv("KUBELET_CA_PATH"); val != "" {
 		config.KubeletCAPath = val
+	}
+
+	if val := os.Getenv("KUBELET_SERVER_NAME"); val != "" {
+		config.KubeletServerName = val
 	}
 
 	if val := os.Getenv("KUBELET_SKIP_VERIFY"); val != "" {
