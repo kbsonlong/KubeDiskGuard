@@ -6,7 +6,7 @@
 
 ## 背景
 
-传统的 cgroup 路径查找方式依赖于模式匹配和文件系统遍历，存在以下问题：
+历史版本的 cgroup 路径查找方式依赖于模式匹配和文件系统遍历，存在以下问题：
 
 1. **不够精确**：模式匹配可能匹配到错误的路径
 2. **性能开销**：文件系统遍历耗时较长
@@ -403,7 +403,7 @@ drwxr-xr-x  4 root root 0 Aug  4 07:13 kubelet-kubepods-poda5762175_5440_4e1e_be
 2. 构建 slice 层次结构：将 `-` 分隔的组件转换为嵌套的 `.slice` 目录
 3. 智能识别 QoS 类型：自动处理 besteffort、burstable 和直接 pod slice
 4. 添加最终的 scope：`service-containerID.scope`
-
+![202508081234726](https://raw.githubusercontent.com/kbsonlong/notes_statics/master/images/202508081234726.png)
 ## 测试
 
 ### 1. 单元测试
