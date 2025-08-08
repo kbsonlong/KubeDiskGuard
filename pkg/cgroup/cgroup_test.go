@@ -12,23 +12,6 @@ func TestNewManager(t *testing.T) {
 	}
 }
 
-func TestFindCgroupPath(t *testing.T) {
-	m := NewManager("v1")
-	_ = m.FindCgroupPath("fakeid") // 只要不panic即可
-	m = NewManager("v2")
-	_ = m.FindCgroupPath("fakeid")
-}
-
-func TestBuildCgroupPath(t *testing.T) {
-	m := NewManager("v1")
-	p := m.BuildCgroupPath("cid", "/parent")
-	if p == "" {
-		t.Errorf("BuildCgroupPath failed")
-	}
-	m = NewManager("v2")
-	_ = m.BuildCgroupPath("cid", "/parent")
-}
-
 func TestSetAndResetIOPSLimit(t *testing.T) {
 	m := NewManager("v1")
 	dir := t.TempDir()

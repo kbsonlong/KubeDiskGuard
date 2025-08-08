@@ -21,26 +21,6 @@ func NewManager(version string) *Manager {
 	}
 }
 
-// FindCgroupPath 查找cgroup路径
-func (m *Manager) FindCgroupPath(containerID string) string {
-	if m.version == "v1" {
-		// 查找blkio cgroup路径
-		pattern := filepath.Join("/sys/fs/cgroup/blkio", "*"+containerID+"*")
-		matches, _ := filepath.Glob(pattern)
-		if len(matches) > 0 {
-			return matches[0]
-		}
-	} else {
-		// cgroup v2
-		pattern := filepath.Join("/sys/fs/cgroup", "*"+containerID+"*")
-		matches, _ := filepath.Glob(pattern)
-		if len(matches) > 0 {
-			return matches[0]
-		}
-	}
-	return ""
-}
-
 // SetIOPSLimit 设置IOPS限制
 func (m *Manager) SetIOPSLimit(cgroupPath, majMin string, iopsLimit int) error {
 	if cgroupPath == "" || majMin == "" {
@@ -101,23 +81,6 @@ func (m *Manager) ResetIOPSLimit(cgroupPath, majMin string) error {
 		log.Printf("Reset IOPS limit at %s (v2)", majMin)
 	}
 	return nil
-}
-
-// BuildCgroupPath 构建cgroup路径
-func (m *Manager) BuildCgroupPath(containerID, cgroupParent string) string {
-	if m.version == "v1" {
-		if cgroupParent == "" || cgroupParent == "/" {
-			return filepath.Join("/sys/fs/cgroup/blkio/docker", containerID)
-		} else {
-			cgroupParentClean := cgroupParent
-			if len(cgroupParent) > 0 && cgroupParent[0] == '/' {
-				cgroupParentClean = cgroupParent[1:]
-			}
-			return filepath.Join("/sys/fs/cgroup/blkio", cgroupParentClean, containerID)
-		}
-	} else {
-		return m.FindCgroupPath(containerID)
-	}
 }
 
 // SetBPSLimit 设置带宽限制（字节/秒）
