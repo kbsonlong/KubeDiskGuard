@@ -139,12 +139,45 @@ func (m *Manager) ResetBPSLimit(cgroupPath, majMin string) error {
 		}
 		log.Printf("Reset BPS limit at %s (v1)", majMin)
 	} else {
+		// cgroup v2: 检查容器是否仍在运行，如果已停止则跳过重置
 		ioMaxFile := filepath.Join(cgroupPath, "io.max")
-		// v2: 写空或"max"
-		if err := os.WriteFile(ioMaxFile, []byte("max"), 0644); err != nil {
-			return fmt.Errorf("failed to reset io.max bps: %v", err)
+
+		// 首先检查cgroup目录是否存在
+		if _, err := os.Stat(cgroupPath); os.IsNotExist(err) {
+			log.Printf("Cgroup path %s does not exist, container may have been removed", cgroupPath)
+			return nil
 		}
-		log.Printf("Reset BPS limit at %s (v2)", majMin)
+
+		// 检查io.max文件是否存在
+		if _, err := os.Stat(ioMaxFile); os.IsNotExist(err) {
+			log.Printf("io.max file does not exist at %s, skipping reset", ioMaxFile)
+			return nil
+		}
+
+		// 尝试多种重置方式
+		resetValues := []string{
+			"max",                         // 标准重置值
+			fmt.Sprintf("%s max", majMin), // 带设备号的重置
+			fmt.Sprintf("%s rbps=max wbps=max riops=max wiops=max", majMin), // 显式重置所有项
+		}
+
+		var lastErr error
+		for i, resetValue := range resetValues {
+			if err := os.WriteFile(ioMaxFile, []byte(resetValue), 0644); err != nil {
+				lastErr = err
+				log.Printf("Reset attempt %d failed with value '%s': %v", i+1, resetValue, err)
+				continue
+			}
+			log.Printf("Successfully reset limits at %s (v2) with value: %s", majMin, resetValue)
+			return nil
+		}
+
+		// 如果所有重置方式都失败，尝试读取当前值并记录
+		if currentContent, err := os.ReadFile(ioMaxFile); err == nil {
+			log.Printf("Current io.max content: %s", string(currentContent))
+		}
+
+		return fmt.Errorf("failed to reset io.max after all attempts: %v", lastErr)
 	}
 	return nil
 }
