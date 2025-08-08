@@ -52,25 +52,25 @@
 ### 注解前缀统一优化
 - **全局注解前缀变更**：将所有注解前缀从 `iops-limit` 统一变更为 `io-limit`，使注解命名更加简洁和一致
 - **影响范围**：
-  - `iops-limit/read-iops` → `io-limit/read-iops`
-  - `iops-limit/write-iops` → `io-limit/write-iops`
-  - `iops-limit/iops` → `io-limit/iops`
-  - `iops-limit/read-bps` → `io-limit/read-bps`
-  - `iops-limit/write-bps` → `io-limit/write-bps`
-  - `iops-limit/bps` → `io-limit/bps`
+  - `iops-limit/read-iops` → `kubediskguard.io/read-iops`
+  - `iops-limit/write-iops` → `kubediskguard.io/write-iops`
+  - `iops-limit/iops` → `kubediskguard.io/iops`
+  - `iops-limit/read-bps` → `kubediskguard.io/read-bps`
+  - `iops-limit/write-bps` → `kubediskguard.io/write-bps`
+  - `iops-limit/bps` → `kubediskguard.io/bps`
   - `iops-limit` → `io-limit`
 - **智能限速注解同步更新**：
-  - `iops-limit/smart-limit` → `io-limit/smart-limit`
-  - `iops-limit/auto-iops` → `io-limit/auto-iops`
-  - `iops-limit/auto-bps` → `io-limit/auto-bps`
-  - `iops-limit/limit-reason` → `io-limit/limit-reason`
+  - `iops-limit/smart-limit` → `kubediskguard.io/smart-limit`
+  - `iops-limit/auto-iops` → `kubediskguard.io/auto-iops`
+  - `iops-limit/auto-bps` → `kubediskguard.io/auto-bps`
+  - `iops-limit/limit-reason` → `kubediskguard.io/limit-reason`
 - **配置项更新**：
   - 环境变量 `SMART_LIMIT_ANNOTATION_PREFIX` 默认值从 `iops-limit` 更新为 `io-limit`
 - **测试用例修正**：更新所有相关测试用例中的注解前缀，确保测试通过
 - **文档同步更新**：README.md、用户手册、开发手册等文档中的注解示例全部更新
 
 ### 注解解析逻辑优化
-- **优先级调整**：明确 `io-limit/iops` 和 `io-limit/bps` 的优先级最高，分别覆盖读写IOPS和读写BPS设置
+- **优先级调整**：明确 `kubediskguard.io/iops` 和 `kubediskguard.io/bps` 的优先级最高，分别覆盖读写IOPS和读写BPS设置
 - **0值处理优化**：注解值为0时正确解除对应方向的限速，避免误判
 - **兼容性保持**：保留对旧格式注解的兼容性，确保平滑升级
 
@@ -80,8 +80,8 @@
 
 ### IOPS与BPS限速功能增强
 - 注解支持：
-  - IOPS：`io-limit/read-iops`、`io-limit/write-iops`、`io-limit/iops`（优先级：read-iops/write-iops > iops）
-  - BPS：`io-limit/read-bps`、`io-limit/write-bps`、`io-limit/bps`
+  - IOPS：`kubediskguard.io/read-iops`、`kubediskguard.io/write-iops`、`kubediskguard.io/iops`（优先级：read-iops/write-iops > iops）
+  - BPS：`kubediskguard.io/read-bps`、`kubediskguard.io/write-bps`、`kubediskguard.io/bps`
   - 注解为0时自动解除对应方向的限速
 - 环境变量支持：
   - `CONTAINER_READ_IOPS_LIMIT`、`CONTAINER_WRITE_IOPS_LIMIT`、`CONTAINER_IOPS_LIMIT`
@@ -114,7 +114,7 @@
 - ShouldProcessPod支持Started字段判断，只有所有业务容器Started为true才处理，避免容器未就绪时误操作。
 
 ### 文档与兼容性
-- README.md已全面更新，所有io-limit/limit相关内容替换为io-limit/read-iops、io-limit/write-iops、io-limit/iops，并补充优先级、兼容性说明。
+- README.md已全面更新，所有kubediskguard.io/limit相关内容替换为kubediskguard.io/read-iops、kubediskguard.io/write-iops、kubediskguard.io/iops，并补充优先级、兼容性说明。
 - 环境变量表格、注解示例、优先级说明、主要变更等均已同步。
 - 变更历史已写入CHANGELOG.md，详细记录架构优化、功能增强、接口调整、测试完善等内容。
 
@@ -130,7 +130,7 @@
 
 ### 功能增强与行为变更
 - **kubelet API优先**：获取本节点Pod信息时优先通过kubelet API，只有kubelet API不可用时才fallback到API Server，极大减少apiserver压力。
-- **注解为0自动解除限速**：Pod注解`io-limit/limit: "0"`时，自动调用ResetIOPSLimit解除该Pod下所有容器的IOPS限速，无需手动命令。
+- **注解为0自动解除限速**：Pod注解`kubediskguard.io/limit: "0"`时，自动调用ResetIOPSLimit解除该Pod下所有容器的IOPS限速，无需手动命令。
 - **Started字段判断更严谨**：只有当Pod为Running且所有业务容器的`Started`字段为true（即startupProbe通过、postStart钩子执行完毕）时才进行IOPS限速，避免容器未就绪时误操作。
 - **main.go参数精简**：移除`resetOne`参数，所有解除操作均通过注解声明式完成。
 

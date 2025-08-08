@@ -533,7 +533,7 @@ func (m *SmartLimitManager) applySmartLimit(podName, namespace string, trend *IO
 	}
 
 	if m.config.SmartLimitAutoIOPS > 0 {
-		annotations[m.config.SmartLimitAnnotationPrefix+"/io-limit"] = strconv.Itoa(m.config.SmartLimitAutoIOPS)
+		annotations[m.config.SmartLimitAnnotationPrefix+"/iops-limit"] = strconv.Itoa(m.config.SmartLimitAutoIOPS)
 	}
 
 	if m.config.SmartLimitAutoBPS > 0 {

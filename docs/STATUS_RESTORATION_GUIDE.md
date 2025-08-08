@@ -41,20 +41,20 @@ go m.restoreLimitStatus()
 ### 限速注解
 ```yaml
 annotations:
-  io-limit/triggered-by: "15m"                    # 触发窗口
-  io-limit/trigger-reason: "15m窗口触发[ReadIOPS:0.65]"  # 触发原因
-  io-limit/read-iops-limit: "300"                 # 读IOPS限速值
-  io-limit/write-iops-limit: "300"                # 写IOPS限速值
-  io-limit/read-bps-limit: "50000000"             # 读BPS限速值
-  io-limit/write-bps-limit: "50000000"            # 写BPS限速值
+  kubediskguard.io/triggered-by: "15m"                    # 触发窗口
+  kubediskguard.io/trigger-reason: "15m窗口触发[ReadIOPS:0.65]"  # 触发原因
+  kubediskguard.io/read-iops-limit: "300"                 # 读IOPS限速值
+  kubediskguard.io/write-iops-limit: "300"                # 写IOPS限速值
+  kubediskguard.io/read-bps-limit: "50000000"             # 读BPS限速值
+  kubediskguard.io/write-bps-limit: "50000000"            # 写BPS限速值
 ```
 
 ### 解除限速注解
 ```yaml
 annotations:
-  io-limit/limit-removed: "true"                  # 限速已解除标记
-  io-limit/removed-at: "2024-01-15T10:30:00Z"     # 解除时间
-  io-limit/removed-reason: "IO已恢复正常"          # 解除原因
+  kubediskguard.io/limit-removed: "true"                  # 限速已解除标记
+  kubediskguard.io/removed-at: "2024-01-15T10:30:00Z"     # 解除时间
+  kubediskguard.io/removed-reason: "IO已恢复正常"          # 解除原因
 ```
 
 ## 恢复逻辑

@@ -201,10 +201,10 @@ spec:
 ```yaml
 metadata:
   annotations:
-    io-limit/smart-limit: "true"           # 标识为智能限速
-    io-limit/auto-iops: "8000"              # 自动计算的IOPS值
-    io-limit/auto-bps: "1048576"           # 自动计算的BPS值
-    io-limit/limit-reason: "high-io-detected" # 限速原因
+    kubediskguard.io/smart-limit: "true"           # 标识为智能限速
+    kubediskguard.io/auto-iops: "8000"              # 自动计算的IOPS值
+    kubediskguard.io/auto-bps: "1048576"           # 自动计算的BPS值
+    kubediskguard.io/limit-reason: "high-io-detected" # 限速原因
 ```
 
 ### 3. 测试高 IO 场景

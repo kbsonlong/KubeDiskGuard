@@ -98,7 +98,7 @@ func GetDefaultConfig() *Config {
 		SmartLimitHighBPSThreshold:    0.8,
 		SmartLimitAutoIOPS:            0,
 		SmartLimitAutoBPS:             0,
-		SmartLimitAnnotationPrefix:    "io-limit",
+		SmartLimitAnnotationPrefix:    "kubediskguard.io",
 		KubeletTokenPath:              "",
 		KubeletCAPath:                 "",
 		KubeletSkipVerify:             false,

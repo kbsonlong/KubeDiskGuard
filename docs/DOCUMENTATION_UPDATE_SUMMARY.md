@@ -14,19 +14,19 @@
 ### 2. 具体变更内容
 
 #### 注解类型
-- `iops-limit/read-iops` → `io-limit/read-iops`
-- `iops-limit/write-iops` → `io-limit/write-iops`
-- `iops-limit/iops` → `io-limit/iops`
-- `iops-limit/read-bps` → `io-limit/read-bps`
-- `iops-limit/write-bps` → `io-limit/write-bps`
-- `iops-limit/bps` → `io-limit/bps`
+- `iops-limit/read-iops` → `kubediskguard.io/read-iops`
+- `iops-limit/write-iops` → `kubediskguard.io/write-iops`
+- `iops-limit/iops` → `kubediskguard.io/iops`
+- `iops-limit/read-bps` → `kubediskguard.io/read-bps`
+- `iops-limit/write-bps` → `kubediskguard.io/write-bps`
+- `iops-limit/bps` → `kubediskguard.io/bps`
 - `iops-limit` → `io-limit`
 
 #### 智能限速注解
-- `iops-limit/smart-limit` → `io-limit/smart-limit`
-- `iops-limit/auto-iops` → `io-limit/auto-iops`
-- `iops-limit/auto-bps` → `io-limit/auto-bps`
-- `iops-limit/limit-reason` → `io-limit/limit-reason`
+- `iops-limit/smart-limit` → `kubediskguard.io/smart-limit`
+- `iops-limit/auto-iops` → `kubediskguard.io/auto-iops`
+- `iops-limit/auto-bps` → `kubediskguard.io/auto-bps`
+- `iops-limit/limit-reason` → `kubediskguard.io/limit-reason`
 
 #### 配置项
 - 环境变量 `SMART_LIMIT_ANNOTATION_PREFIX` 默认值从 `iops-limit` 更新为 `io-limit`

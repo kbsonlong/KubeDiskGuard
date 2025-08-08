@@ -114,12 +114,12 @@ metadata:
     io-limit: "1000"
     
     # 分别设置读写 IOPS
-    io-limit/read: "800"
-    io-limit/write: "600"
+    kubediskguard.io/read: "800"
+    kubediskguard.io/write: "600"
     
     # 分别设置读写 BPS (字节/秒)
-    io-limit/read-bps: "1048576"  # 1MB/s
-    io-limit/write-bps: "524288"  # 512KB/s
+    kubediskguard.io/read-bps: "1048576"  # 1MB/s
+    kubediskguard.io/write-bps: "524288"  # 512KB/s
 spec:
   containers:
   - name: app
@@ -158,15 +158,15 @@ kind: Pod
 metadata:
   name: mypod
   annotations:
-    io-limit/read-iops: "1200"   # 读IOPS限制
-    io-limit/write-iops: "800"   # 写IOPS限制
+    kubediskguard.io/read-iops: "1200"   # 读IOPS限制
+    kubediskguard.io/write-iops: "800"   # 写IOPS限制
     # 或统一设置
-    io-limit/iops: "1000"        # 读写IOPS都为1000
+    kubediskguard.io/iops: "1000"        # 读写IOPS都为1000
     # 智能限速注解（自动添加）
-    io-limit/smart-limit: "true" # 标识为智能限速
-    io-limit/auto-iops: "800"    # 自动计算的IOPS值
-    io-limit/auto-bps: "1048576" # 自动计算的BPS值（1MB/s）
-    io-limit/limit-reason: "high-io-detected" # 限速原因
+    kubediskguard.io/smart-limit: "true" # 标识为智能限速
+    kubediskguard.io/auto-iops: "800"    # 自动计算的IOPS值
+    kubediskguard.io/auto-bps: "1048576" # 自动计算的BPS值（1MB/s）
+    kubediskguard.io/limit-reason: "high-io-detected" # 限速原因
 ```
 
 - 优先级：`read-iops`/`write-iops` > `iops`
@@ -233,7 +233,7 @@ env:
 ```
 
 #### IOPS注解优先级说明
-- `io-limit/read-iops`、`io-limit/write-iops` 优先于 `io-limit/iops`
+- `kubediskguard.io/read-iops`、`kubediskguard.io/write-iops` 优先于 `kubediskguard.io/iops`
 - 若都未设置，则用全局环境变量
 - 注解为0表示解除限速
 
