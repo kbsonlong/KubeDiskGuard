@@ -61,11 +61,17 @@ func (c *ContainerdRuntime) getContainerInfo(ctx context.Context, cont container
 	if err != nil {
 		return nil, fmt.Errorf("failed to get container info: %v", err)
 	}
+	// 获取容器规格信息
+	spec, err := cont.Spec(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get container spec: %v", err)
+	}
 
 	containerInfo := &container.ContainerInfo{
-		ID:          cont.ID(),
-		Name:        info.Labels["io.kubernetes.container.name"],
-		Annotations: map[string]string{},
+		ID:           cont.ID(),
+		Name:         info.Labels["io.kubernetes.container.name"],
+		Annotations:  map[string]string{},
+		CgroupParent: spec.Linux.CgroupsPath,
 	}
 
 	// 获取镜像信息
@@ -94,7 +100,7 @@ func (c *ContainerdRuntime) SetLimits(container *container.ContainerInfo, riops,
 	if err != nil {
 		return err
 	}
-	cgroupPath, err := c.getCgroupPath(container.ID)
+	cgroupPath, err := c.getCgroupPath(container.ID, container.CgroupParent)
 	if err != nil {
 		return fmt.Errorf("failed to get cgroup path for container %s: %v", container.ID, err)
 	}
@@ -107,7 +113,7 @@ func (c *ContainerdRuntime) ResetLimits(container *container.ContainerInfo) erro
 	if err != nil {
 		return err
 	}
-	cgroupPath, err := c.getCgroupPath(container.ID)
+	cgroupPath, err := c.getCgroupPath(container.ID, container.CgroupParent)
 	if err != nil {
 		return fmt.Errorf("failed to get cgroup path for container %s: %v", container.ID, err)
 	}
@@ -115,28 +121,7 @@ func (c *ContainerdRuntime) ResetLimits(container *container.ContainerInfo) erro
 }
 
 // getCgroupPath 通过containerd API获取容器的cgroup路径
-func (c *ContainerdRuntime) getCgroupPath(containerID string) (string, error) {
-	ctx := namespaces.WithNamespace(context.Background(), c.config.ContainerdNamespace)
-
-	// 获取容器信息
-	cont, err := c.client.LoadContainer(ctx, containerID)
-	if err != nil {
-		return "", fmt.Errorf("failed to load container: %v", err)
-	}
-
-	// 获取容器规格信息
-	spec, err := cont.Spec(ctx)
-	if err != nil {
-		return "", fmt.Errorf("failed to get container spec: %v", err)
-	}
-
-	// 从规格中获取cgroup路径
-	if spec.Linux == nil || spec.Linux.CgroupsPath == "" {
-		return "", fmt.Errorf("no cgroup path found in container spec")
-	}
-
-	cgroupsPath := spec.Linux.CgroupsPath
-	
+func (c *ContainerdRuntime) getCgroupPath(containerID string, cgroupsPath string) (string, error) {
 	// 根据cgroup版本和systemd管理模式构建完整路径
 	if c.config.CgroupVersion == "v1" {
 		// cgroup v1: 需要指定子系统路径
@@ -173,37 +158,37 @@ func (c *ContainerdRuntime) convertSystemdCgroupPath(cgroupsPath string) (string
 	// 解析systemd cgroup路径格式
 	// 输入格式: kubelet-kubepods-besteffort-podc42adbb2_915e_4883_aa26_7ed96c3196da.slice:cri-containerd:16c0f5cee8ed9
 	// 输出格式: /sys/fs/cgroup/kubelet.slice/kubelet-kubepods.slice/kubelet-kubepods-besteffort.slice/kubelet-kubepods-besteffort-podc42adbb2_915e_4883_aa26_7ed96c3196da.slice/cri-containerd-16c0f5cee8ed9.scope/
-	
+
 	parts := strings.Split(cgroupsPath, ":")
 	if len(parts) != 3 {
 		return "", fmt.Errorf("invalid systemd cgroup path format: %s", cgroupsPath)
 	}
-	
+
 	slicePath := parts[0]   // kubelet-kubepods-besteffort-podc42adbb2_915e_4883_aa26_7ed96c3196da.slice
 	service := parts[1]     // cri-containerd
 	containerID := parts[2] // 16c0f5cee8ed9
-	
+
 	// 移除末尾的.slice后缀来获取纯净的slice名称
 	sliceNameWithoutSuffix := strings.TrimSuffix(slicePath, ".slice")
-	
+
 	// 构建slice层次结构
 	sliceComponents := strings.Split(sliceNameWithoutSuffix, "-")
 	var pathComponents []string
-	
+
 	// 添加根slice
 	pathComponents = append(pathComponents, "kubelet.slice")
-	
+
 	// 构建中间slice路径
 	currentSlice := "kubelet"
 	for i := 1; i < len(sliceComponents); i++ {
 		currentSlice += "-" + sliceComponents[i]
 		pathComponents = append(pathComponents, currentSlice+".slice")
 	}
-	
+
 	// 添加最终的scope
 	scopeName := fmt.Sprintf("%s-%s.scope", service, containerID)
 	pathComponents = append(pathComponents, scopeName)
-	
+
 	// 构建完整路径
 	fullPath := "/sys/fs/cgroup/" + strings.Join(pathComponents, "/") + "/"
 	return fullPath, nil

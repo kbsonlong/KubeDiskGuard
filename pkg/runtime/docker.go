@@ -66,21 +66,14 @@ func (d *DockerRuntime) Close() error {
 }
 
 // getCgroupPath 通过 Docker API 获取容器的 cgroup 路径
-func (d *DockerRuntime) getCgroupPath(containerID string) (string, error) {
-	ctx := context.Background()
-
-	// 获取容器详细信息
-	info, err := d.client.ContainerInspect(ctx, containerID)
-	if err != nil {
-		return "", fmt.Errorf("failed to inspect container: %v", err)
-	}
+func (d *DockerRuntime) getCgroupPath(containerID string, cgroupParent string) (string, error) {
 
 	// 从容器信息中获取 cgroup 路径
 	var cgroupsPath string
-	if info.HostConfig.CgroupParent != "" {
+	if cgroupParent != "" {
 		// 如果有明确的 cgroup parent，使用它构建完整路径
 		// 格式: {CgroupParent}/{containerID}
-		cgroupsPath = fmt.Sprintf("%s/%s", info.HostConfig.CgroupParent, containerID)
+		cgroupsPath = fmt.Sprintf("%s/%s", cgroupParent, containerID)
 	} else {
 		// 默认的 Docker cgroup 路径格式
 		fmt.Printf("Warning: Container %s has no explicit cgroup parent,use default path /docker/<containerID>", containerID)
@@ -104,7 +97,7 @@ func (d *DockerRuntime) SetLimits(container *container.ContainerInfo, riops, wio
 	if err != nil {
 		return err
 	}
-	cgroupPath, err := d.getCgroupPath(container.ID)
+	cgroupPath, err := d.getCgroupPath(container.ID, container.CgroupParent)
 	if err != nil {
 		return fmt.Errorf("failed to get cgroup path for container %s: %v", container.ID, err)
 	}
@@ -117,7 +110,7 @@ func (d *DockerRuntime) ResetLimits(container *container.ContainerInfo) error {
 	if err != nil {
 		return err
 	}
-	cgroupPath, err := d.getCgroupPath(container.ID)
+	cgroupPath, err := d.getCgroupPath(container.ID, container.CgroupParent)
 	if err != nil {
 		return fmt.Errorf("failed to get cgroup path for container %s: %v", container.ID, err)
 	}
