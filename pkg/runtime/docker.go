@@ -68,32 +68,29 @@ func (d *DockerRuntime) Close() error {
 // getCgroupPath 通过 Docker API 获取容器的 cgroup 路径
 func (d *DockerRuntime) getCgroupPath(containerID string) (string, error) {
 	ctx := context.Background()
-	
+
 	// 获取容器详细信息
 	info, err := d.client.ContainerInspect(ctx, containerID)
 	if err != nil {
 		return "", fmt.Errorf("failed to inspect container: %v", err)
 	}
-	
+
 	// 从容器信息中获取 cgroup 路径
-	// Docker 容器的 cgroup 路径通常在 HostConfig.CgroupParent 或者可以从容器 ID 构建
 	var cgroupsPath string
 	if info.HostConfig.CgroupParent != "" {
-		// 如果有明确的 cgroup parent，使用它
-		cgroupsPath = fmt.Sprintf("%s/docker-%s.scope", info.HostConfig.CgroupParent, containerID)
+		// 如果有明确的 cgroup parent，使用它构建完整路径
+		// 格式: {CgroupParent}/{containerID}
+		cgroupsPath = fmt.Sprintf("%s/%s", info.HostConfig.CgroupParent, containerID)
 	} else {
 		// 默认的 Docker cgroup 路径格式
-		if d.config.CgroupVersion == "v1" {
-			cgroupsPath = fmt.Sprintf("/docker/%s", containerID)
-		} else {
-			// cgroup v2 的路径格式
-			cgroupsPath = fmt.Sprintf("/system.slice/docker-%s.scope", containerID)
-		}
+		fmt.Printf("Warning: Container %s has no explicit cgroup parent,use default path /docker/<containerID>", containerID)
+		cgroupsPath = fmt.Sprintf("/docker/%s", containerID)
 	}
-	
+
 	// 根据 cgroup 版本构建完整路径
 	if d.config.CgroupVersion == "v1" {
 		// cgroup v1: 需要指定子系统路径
+		// 实际路径格式: /sys/fs/cgroup/blkio/{CgroupParent}/{containerID}
 		return fmt.Sprintf("/sys/fs/cgroup/blkio%s", cgroupsPath), nil
 	} else {
 		// cgroup v2: 统一层次结构

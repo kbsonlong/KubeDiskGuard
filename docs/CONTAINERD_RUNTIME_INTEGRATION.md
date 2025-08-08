@@ -177,8 +177,9 @@ func (d *DockerRuntime) getCgroupPath(containerID string) (string, error) {
     // Docker 容器的 cgroup 路径通常在 HostConfig.CgroupParent 或者可以从容器 ID 构建
     var cgroupsPath string
     if info.HostConfig.CgroupParent != "" {
-        // 如果有明确的 cgroup parent，使用它
-        cgroupsPath = fmt.Sprintf("%s/docker-%s.scope", info.HostConfig.CgroupParent, containerID)
+        // 如果有明确的 cgroup parent，使用它构建完整路径
+        // 格式: {CgroupParent}/{containerID}
+        cgroupsPath = fmt.Sprintf("%s/%s", info.HostConfig.CgroupParent, containerID)
     } else {
         // 默认的 Docker cgroup 路径格式
         if d.config.CgroupVersion == "v1" {
@@ -192,12 +193,28 @@ func (d *DockerRuntime) getCgroupPath(containerID string) (string, error) {
     // 根据 cgroup 版本构建完整路径
     if d.config.CgroupVersion == "v1" {
         // cgroup v1: 需要指定子系统路径
+        // 实际路径格式: /sys/fs/cgroup/blkio/{CgroupParent}/{containerID}
         return fmt.Sprintf("/sys/fs/cgroup/blkio%s", cgroupsPath), nil
     } else {
         // cgroup v2: 统一层次结构
         return fmt.Sprintf("/sys/fs/cgroup%s", cgroupsPath), nil
     }
 }
+```
+
+该方法通过 Docker API 获取容器的详细信息，并根据 cgroup 版本和容器信息构建 cgroup 路径。
+
+**Docker Cgroup v1 路径示例：**
+```bash
+# Docker inspect 获取 CgroupParent
+$ docker inspect b6abba6fc2318 | jq .[].HostConfig.CgroupParent
+"/kubepods/burstable/pod4b5860c3-7ac8-47b6-921d-053136bfc3c9"
+
+# 实际文件系统路径
+$ ls -l /sys/fs/cgroup/blkio/kubepods/burstable/pod4b5860c3-7ac8-47b6-921d-053136bfc3c9/
+drwxr-xr-x 2 root root 0 Jul 23  2024 b6abba6fc231831d331f08ced6d004c94996e184761018fed9514c37cf8e97a5
+-rw-r--r-- 1 root root 0 Aug  8 12:17 blkio.throttle.read_bps_device
+-rw-r--r-- 1 root root 0 Aug  8 12:17 blkio.throttle.write_bps_device
 ```
 
 #### SetLimits 和 ResetLimits 方法
