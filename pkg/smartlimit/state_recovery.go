@@ -6,6 +6,12 @@ import "log"
 func (m *SmartLimitManager) restoreLimitStatus() {
 	log.Println("Restoring limit status from pod annotations...")
 
+	// 如果 kubeClient 为 nil，跳过状态恢复
+	if m.kubeClient == nil {
+		log.Println("KubeClient is nil, skipping limit status restoration")
+		return
+	}
+
 	// 获取当前节点上的所有Pod
 	pods, err := m.kubeClient.ListNodePodsWithKubeletFirst()
 	if err != nil {

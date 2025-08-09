@@ -375,6 +375,12 @@ func (m *SmartLimitManager) checkRemoveCondition(readIOPS, writeIOPS, readBPS, w
 
 // removeSmartLimit 移除限速
 func (m *SmartLimitManager) removeSmartLimit(podName, namespace string, trend *IOTrend, limitStatus *LimitStatus) {
+	// 如果 kubeClient 为 nil，跳过智能限速移除
+	if m.kubeClient == nil {
+		log.Printf("KubeClient is nil, skipping smart limit removal for pod %s/%s", namespace, podName)
+		return
+	}
+
 	// 获取Pod
 	pod, err := m.kubeClient.GetPod(namespace, podName)
 	if err != nil {
@@ -519,6 +525,12 @@ func (m *SmartLimitManager) buildTriggerReason(window string, readIOPS, writeIOP
 
 // applySmartLimit 应用智能限速
 func (m *SmartLimitManager) applySmartLimit(podName, namespace string, trend *IOTrend) {
+	// 如果 kubeClient 为 nil，跳过智能限速应用
+	if m.kubeClient == nil {
+		log.Printf("KubeClient is nil, skipping smart limit application for pod %s/%s", namespace, podName)
+		return
+	}
+
 	// 获取Pod
 	pod, err := m.kubeClient.GetPod(namespace, podName)
 	if err != nil {
@@ -559,6 +571,12 @@ func (m *SmartLimitManager) applySmartLimit(podName, namespace string, trend *IO
 
 // applySmartLimitWithResult 应用分级智能限速
 func (m *SmartLimitManager) applySmartLimitWithResult(podName, namespace string, trend *IOTrend, limitResult *LimitResult) {
+	// 如果 kubeClient 为 nil，跳过智能限速应用
+	if m.kubeClient == nil {
+		log.Printf("KubeClient is nil, skipping smart limit application for pod %s/%s", namespace, podName)
+		return
+	}
+
 	// 获取Pod
 	pod, err := m.kubeClient.GetPod(namespace, podName)
 	if err != nil {
@@ -700,6 +718,7 @@ func (m *SmartLimitManager) GetAllContainerHistory() map[string]*ContainerIOHist
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
+	log.Printf("[DEBUG] GetAllContainerHistory called, total containers in history: %d", len(m.history))
 	result := make(map[string]*ContainerIOHistory)
 	for containerID, history := range m.history {
 		// 创建副本以避免并发问题
@@ -712,9 +731,11 @@ func (m *SmartLimitManager) GetAllContainerHistory() map[string]*ContainerIOHist
 			Stats:       make([]*kubeclient.IOStats, len(history.Stats)),
 		}
 		copy(historyCopy.Stats, history.Stats)
+		log.Printf("[DEBUG] Container %s has %d stats entries, last update: %v", containerID, len(history.Stats), history.LastUpdate)
 		history.mu.RUnlock()
 		result[containerID] = historyCopy
 	}
+	log.Printf("[DEBUG] Returning %d container histories", len(result))
 	return result
 }
 

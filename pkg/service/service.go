@@ -88,20 +88,29 @@ func NewKubeDiskGuardService(cfg *config.Config) (*KubeDiskGuardService, error) 
 		return nil, err
 	}
 
-	nodeName := os.Getenv("NODE_NAME")
-	if nodeName == "" {
-		return nil, fmt.Errorf("NODE_NAME env is required")
-	}
-	kubeClient, err := kubeclient.NewKubeClientWithConfig(nodeName, cfg.KubeConfigPath, cfg)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create kubeclient: %v", err)
-	}
-	service.kubeClient = kubeClient
-
+	// 只有在智能限速启用时才创建 kubeclient
 	if cfg.SmartLimitEnabled {
+		nodeName := os.Getenv("NODE_NAME")
+		// 当不使用 kubelet API 时，NODE_NAME 是必需的
+		if !cfg.SmartLimitUseKubeletAPI && nodeName == "" {
+			return nil, fmt.Errorf("NODE_NAME env is required when smart limit is enabled and not using kubelet API")
+		}
+		// 当使用 kubelet API 时，如果没有 NODE_NAME，使用默认值
+		if cfg.SmartLimitUseKubeletAPI && nodeName == "" {
+			nodeName = "localhost"
+			log.Printf("Using kubelet API mode, NODE_NAME not set, using default: %s", nodeName)
+		}
+		kubeClient, err := kubeclient.NewKubeClientWithConfig(nodeName, cfg.KubeConfigPath, cfg)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create kubeclient: %v", err)
+		}
+		service.kubeClient = kubeClient
+
 		cgroupMgr := cgroup.NewManager(cfg.CgroupVersion)
 		service.smartLimit = smartlimit.NewSmartLimitManager(cfg, service.kubeClient, cgroupMgr)
 		log.Printf("Smart limit manager initialized")
+	} else {
+		log.Printf("Smart limit disabled, skipping kubeclient creation")
 	}
 
 	return service, nil
@@ -188,6 +197,12 @@ func (s *KubeDiskGuardService) ShouldProcessPod(pod corev1.Pod) bool {
 
 // ProcessExistingContainers 处理现有容器（以Pod为主索引）
 func (s *KubeDiskGuardService) ProcessExistingContainers() error {
+	// 如果 kubeClient 为 nil（智能限速禁用），则跳过处理
+	if s.kubeClient == nil {
+		log.Println("KubeClient is nil, skipping existing containers processing (smart limit disabled)")
+		return nil
+	}
+
 	pods, err := s.kubeClient.ListNodePodsWithKubeletFirst()
 	if err != nil {
 		log.Printf("Failed to get node pods: %v", err)
@@ -226,6 +241,12 @@ func (s *KubeDiskGuardService) WatchEvents() error {
 
 // WatchPodEvents 监听本节点Pod变化，动态调整IOPS
 func (s *KubeDiskGuardService) WatchPodEvents() error {
+	// 如果 kubeClient 为 nil（智能限速禁用），则跳过监听
+	if s.kubeClient == nil {
+		log.Println("KubeClient is nil, skipping pod events watching (smart limit disabled)")
+		return nil
+	}
+
 	watcher, err := s.kubeClient.WatchNodePods()
 	if err != nil {
 		log.Printf("[DEBUG] WatchNodePods failed: %v", err)
@@ -358,8 +379,22 @@ func (s *KubeDiskGuardService) Run() error {
 		s.smartLimit.Start()
 	}
 
+	// 如果 kubeClient 为 nil（智能限速禁用），则跳过 Pod 事件监听
+	if s.kubeClient == nil {
+		log.Println("KubeClient is nil, skipping pod event monitoring (smart limit disabled)")
+		// 只启动智能限速管理器，不进行 Pod 监听
+		select {} // 阻塞等待
+	}
+
 	pods, err := s.kubeClient.ListNodePodsWithKubeletFirst()
 	if err != nil {
+		// 在 kubelet API 模式下，如果连接失败，记录警告但不退出服务
+		if s.Config.SmartLimitUseKubeletAPI {
+			log.Printf("Warning: failed to list existing pods in kubelet API mode: %v", err)
+			log.Println("Continuing without initial pod list, will rely on smart limit manager...")
+			// 只启动智能限速管理器，不进行 Pod 监听
+			select {} // 阻塞等待
+		}
 		return fmt.Errorf("failed to list existing pods: %v", err)
 	}
 
@@ -383,6 +418,13 @@ func (s *KubeDiskGuardService) Run() error {
 
 	watcher, err := s.kubeClient.WatchNodePods()
 	if err != nil {
+		// 在 kubelet API 模式下，如果监听失败，记录警告但不退出服务
+		if s.Config.SmartLimitUseKubeletAPI {
+			log.Printf("Warning: failed to watch pods in kubelet API mode: %v", err)
+			log.Println("Continuing without pod watching, will rely on smart limit manager...")
+			// 只启动智能限速管理器，不进行 Pod 监听
+			select {} // 阻塞等待
+		}
 		return fmt.Errorf("failed to watch pods: %v", err)
 	}
 	defer watcher.Stop()

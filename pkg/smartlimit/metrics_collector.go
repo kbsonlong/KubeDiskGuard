@@ -8,6 +8,7 @@ import (
 
 // collectIOStats 收集IO统计信息
 func (m *SmartLimitManager) collectIOStats() {
+	log.Printf("[DEBUG] Starting IO stats collection, kubeClient available: %v", m.kubeClient != nil)
 	if m.kubeClient != nil {
 		m.collectIOStatsFromKubelet()
 		return
@@ -17,6 +18,7 @@ func (m *SmartLimitManager) collectIOStats() {
 
 // collectIOStatsFromKubelet 从kubelet API收集IO统计信息
 func (m *SmartLimitManager) collectIOStatsFromKubelet() {
+	log.Printf("[DEBUG] Attempting to collect IO stats from kubelet API")
 	summary, err := m.kubeClient.GetNodeSummary()
 	if err != nil {
 		log.Printf("Failed to get node summary from kubelet: %v, falling back to cAdvisor metrics", err)
@@ -25,19 +27,24 @@ func (m *SmartLimitManager) collectIOStatsFromKubelet() {
 		return
 	}
 
+	log.Printf("[DEBUG] Got node summary with %d pods", len(summary.Pods))
 	if len(summary.Pods) == 0 {
 		log.Println("Node summary contains no pods, trying cAdvisor metrics instead.")
 		m.collectIOStatsFromCadvisor()
 		return
 	}
 
+	containerCount := 0
 	for _, podStats := range summary.Pods {
 		podName := podStats.PodRef.Name
 		namespace := podStats.PodRef.Namespace
+		log.Printf("[DEBUG] Processing pod %s/%s", namespace, podName)
 		if !m.shouldMonitorPodByNamespace(namespace) {
+			log.Printf("[DEBUG] Skipping pod %s/%s due to namespace filter", namespace, podName)
 			continue
 		}
 		for _, containerStats := range podStats.Containers {
+			log.Printf("[DEBUG] Processing container %s, DiskIO available: %v", containerStats.Name, containerStats.DiskIO != nil)
 			if containerStats.DiskIO == nil {
 				continue
 			}
@@ -49,13 +56,23 @@ func (m *SmartLimitManager) collectIOStatsFromKubelet() {
 				ReadBPS:     int64(containerStats.DiskIO.ReadBytes),
 				WriteBPS:    int64(containerStats.DiskIO.WriteBytes),
 			}
+			log.Printf("[DEBUG] Adding IO stats for container %s: ReadIOPS=%d, WriteIOPS=%d, ReadBPS=%d, WriteBPS=%d", 
+				containerStats.Name, stats.ReadIOPS, stats.WriteIOPS, stats.ReadBPS, stats.WriteBPS)
 			m.addIOStats(containerStats.Name, podName, namespace, stats)
+			containerCount++
 		}
 	}
+	log.Printf("[DEBUG] Collected IO stats for %d containers from kubelet API", containerCount)
 }
 
 // collectIOStatsFromCadvisor 从cAdvisor指标收集IO统计信息
 func (m *SmartLimitManager) collectIOStatsFromCadvisor() {
+	// 如果 kubeClient 为 nil，跳过 cAdvisor 指标收集
+	if m.kubeClient == nil {
+		log.Println("KubeClient is nil, skipping cAdvisor metrics collection")
+		return
+	}
+
 	metrics, err := m.kubeClient.GetCadvisorMetrics()
 	if err != nil {
 		log.Printf("Failed to get cadvisor metrics: %v", err)
@@ -99,6 +116,7 @@ func (m *SmartLimitManager) addIOStats(containerID, podName, namespace string, s
 
 	history, exists := m.history[containerID]
 	if !exists {
+		log.Printf("[DEBUG] Creating new history for container %s (pod: %s/%s)", containerID, namespace, podName)
 		history = &ContainerIOHistory{
 			ContainerID: containerID,
 			PodName:     podName,
@@ -113,6 +131,7 @@ func (m *SmartLimitManager) addIOStats(containerID, podName, namespace string, s
 
 	history.Stats = append(history.Stats, stats)
 	history.LastUpdate = time.Now()
+	log.Printf("[DEBUG] Added IO stats to container %s, total stats count: %d", containerID, len(history.Stats))
 
 	// 清理过期数据
 	m.cleanupContainerHistory(history)
