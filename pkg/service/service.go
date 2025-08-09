@@ -344,10 +344,13 @@ func (s *KubeDiskGuardService) Close() error {
 	if s.smartLimit != nil {
 		s.smartLimit.Stop()
 	}
-	if s.runtime != nil {
-		return s.runtime.Close()
-	}
-	return nil
+
+	return s.runtime.Close()
+}
+
+// GetSmartLimitManager 返回智能限速管理器
+func (s *KubeDiskGuardService) GetSmartLimitManager() *smartlimit.SmartLimitManager {
+	return s.smartLimit
 }
 
 func (s *KubeDiskGuardService) Run() error {

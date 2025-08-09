@@ -6,9 +6,11 @@ import (
 	"net/http"
 	"os"
 
+	"KubeDiskGuard/pkg/api"
 	"KubeDiskGuard/pkg/config"
 	"KubeDiskGuard/pkg/service"
 
+	"github.com/gorilla/mux"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
@@ -30,16 +32,21 @@ func main() {
 		os.Exit(0)
 	}
 
-	// 启动metrics和健康探测接口
+	// 创建路由器
+	router := mux.NewRouter()
+
+	// 添加 Prometheus metrics 和健康检查
+	router.Handle("/metrics", promhttp.Handler())
+	router.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("ok"))
+	})
+
+	// 启动HTTP服务器
 	go func() {
-		http.Handle("/metrics", promhttp.Handler())
-		http.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusOK)
-			w.Write([]byte("ok"))
-		})
-		log.Printf("[INFO] Metrics/healthz listening on %s", *metricsAddr)
-		if err := http.ListenAndServe(*metricsAddr, nil); err != nil {
-			log.Fatalf("[FATAL] Metrics/healthz server error: %v", err)
+		log.Printf("[INFO] HTTP server listening on %s", *metricsAddr)
+		if err := http.ListenAndServe(*metricsAddr, router); err != nil {
+			log.Fatalf("[FATAL] HTTP server error: %v", err)
 		}
 	}()
 
@@ -57,6 +64,11 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to create IOPS limit service: %v", err)
 	}
+
+	// 创建并注册 API 服务器
+	apiServer := api.NewAPIServer(svc.GetSmartLimitManager())
+	apiServer.RegisterRoutes(router)
+	log.Printf("[INFO] API routes registered")
 
 	if *resetAll {
 		if err := svc.ResetAllContainersIOPSLimit(); err != nil {

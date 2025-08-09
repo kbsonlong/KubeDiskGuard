@@ -59,3 +59,4 @@ vendor/
 # 备份文件
 *.bak
 *.backup 
+test_api.sh

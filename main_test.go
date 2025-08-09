@@ -201,6 +201,10 @@ func (m *mockKubeClient) CreateEvent(namespace, podName, eventType, reason, mess
 	return nil
 }
 
+func (m *mockKubeClient) TestKubeletConnection() error {
+	return nil
+}
+
 func TestResetAllContainersIOPSLimit(t *testing.T) {
 	os.Setenv("NODE_NAME", "test-node")
 	defer os.Unsetenv("NODE_NAME")

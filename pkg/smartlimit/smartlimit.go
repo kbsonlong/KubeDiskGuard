@@ -647,3 +647,97 @@ func (m *SmartLimitManager) updateLimitStatus(containerID, podName, namespace st
 	limitStatus.AppliedAt = time.Now()
 	limitStatus.LastCheckAt = time.Now()
 }
+
+// GetAllLimitStatus 获取所有容器的限速状态（API 接口）
+func (m *SmartLimitManager) GetAllLimitStatus() map[string]*LimitStatus {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	result := make(map[string]*LimitStatus)
+	for containerID, status := range m.limitStatus {
+		// 创建副本以避免并发问题
+		statusCopy := &LimitStatus{
+			ContainerID: status.ContainerID,
+			PodName:     status.PodName,
+			Namespace:   status.Namespace,
+			IsLimited:   status.IsLimited,
+			TriggeredBy: status.TriggeredBy,
+			LimitResult: status.LimitResult,
+			AppliedAt:   status.AppliedAt,
+			LastCheckAt: status.LastCheckAt,
+		}
+		result[containerID] = statusCopy
+	}
+	return result
+}
+
+// GetContainerLimitStatus 获取单个容器的限速状态（API 接口）
+func (m *SmartLimitManager) GetContainerLimitStatus(containerID string) (*LimitStatus, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	status, exists := m.limitStatus[containerID]
+	if !exists {
+		return nil, false
+	}
+
+	// 创建副本以避免并发问题
+	statusCopy := &LimitStatus{
+		ContainerID: status.ContainerID,
+		PodName:     status.PodName,
+		Namespace:   status.Namespace,
+		IsLimited:   status.IsLimited,
+		TriggeredBy: status.TriggeredBy,
+		LimitResult: status.LimitResult,
+		AppliedAt:   status.AppliedAt,
+		LastCheckAt: status.LastCheckAt,
+	}
+	return statusCopy, true
+}
+
+// GetAllContainerHistory 获取所有容器的历史数据（API 接口）
+func (m *SmartLimitManager) GetAllContainerHistory() map[string]*ContainerIOHistory {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	result := make(map[string]*ContainerIOHistory)
+	for containerID, history := range m.history {
+		// 创建副本以避免并发问题
+		history.mu.RLock()
+		historyCopy := &ContainerIOHistory{
+			ContainerID: history.ContainerID,
+			PodName:     history.PodName,
+			Namespace:   history.Namespace,
+			LastUpdate:  history.LastUpdate,
+			Stats:       make([]*kubeclient.IOStats, len(history.Stats)),
+		}
+		copy(historyCopy.Stats, history.Stats)
+		history.mu.RUnlock()
+		result[containerID] = historyCopy
+	}
+	return result
+}
+
+// GetContainerHistory 获取单个容器的历史数据（API 接口）
+func (m *SmartLimitManager) GetContainerHistory(containerID string) (*ContainerIOHistory, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	history, exists := m.history[containerID]
+	if !exists {
+		return nil, false
+	}
+
+	// 创建副本以避免并发问题
+	history.mu.RLock()
+	historyCopy := &ContainerIOHistory{
+		ContainerID: history.ContainerID,
+		PodName:     history.PodName,
+		Namespace:   history.Namespace,
+		LastUpdate:  history.LastUpdate,
+		Stats:       make([]*kubeclient.IOStats, len(history.Stats)),
+	}
+	copy(historyCopy.Stats, history.Stats)
+	history.mu.RUnlock()
+	return historyCopy, true
+}
