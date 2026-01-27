@@ -24,4 +24,5 @@ type Runtime interface {
 	SetLimits(container *ContainerInfo, riops, wiops, rbps, wbps int) error
 	// 解除所有限速
 	ResetLimits(container *ContainerInfo) error
+	ReadIOPressure(container *ContainerInfo) (float64, float64, error)
 }

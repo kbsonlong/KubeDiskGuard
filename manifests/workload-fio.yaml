@@ -1,0 +1,41 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: io-test
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fio-rw
+  namespace: io-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: fio-rw
+  template:
+    metadata:
+      labels:
+        app: fio-rw
+    spec:
+      containers:
+        - name: fio
+          image: ghcr.io/dcs-x/fio:latest
+          args:
+            - "--name=randreadwrite"
+            - "--filename=/data/testfile"
+            - "--direct=1"
+            - "--ioengine=libaio"
+            - "--rw=randrw"
+            - "--rwmixread=50"
+            - "--bs=4k"
+            - "--size=256M"
+            - "--numjobs=1"
+            - "--time_based"
+            - "--runtime=600"
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          emptyDir: {}

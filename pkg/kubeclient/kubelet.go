@@ -207,14 +207,16 @@ func (k *KubeClient) GetCadvisorMetrics() (string, error) {
 // ParseCadvisorMetrics 解析cAdvisor指标
 func (k *KubeClient) ParseCadvisorMetrics(metrics string) (*cadvisor.CadvisorMetrics, error) {
 	result := &cadvisor.CadvisorMetrics{
-		ContainerFSCapacityBytes:    make(map[string]float64),
-		ContainerFSUsageBytes:       make(map[string]float64),
-		ContainerFSIoTimeSeconds:    make(map[string]float64),
-		ContainerFSIoTimeWeighted:   make(map[string]float64),
-		ContainerFSReadsBytesTotal:  make(map[string]float64),
-		ContainerFSWritesBytesTotal: make(map[string]float64),
-		ContainerFSReadsTotal:       make(map[string]float64),
-		ContainerFSWritesTotal:      make(map[string]float64),
+		ContainerFSCapacityBytes:          make(map[string]float64),
+		ContainerFSUsageBytes:             make(map[string]float64),
+		ContainerFSIoTimeSeconds:          make(map[string]float64),
+		ContainerFSIoTimeWeighted:         make(map[string]float64),
+		ContainerFSReadsBytesTotal:        make(map[string]float64),
+		ContainerFSWritesBytesTotal:       make(map[string]float64),
+		ContainerFSReadsTotal:             make(map[string]float64),
+		ContainerFSWritesTotal:            make(map[string]float64),
+		ContainerBlkioThrottledOpsTotal:   make(map[string]float64),
+		ContainerBlkioThrottledBytesTotal: make(map[string]float64),
 	}
 	lines := strings.Split(metrics, "\n")
 	for _, line := range lines {
@@ -253,6 +255,10 @@ func (k *KubeClient) ParseCadvisorMetrics(metrics string) (*cadvisor.CadvisorMet
 			result.ContainerFSReadsTotal[containerID] = value
 		case strings.HasPrefix(metricName, "container_fs_writes_total"):
 			result.ContainerFSWritesTotal[containerID] = value
+		case strings.HasPrefix(metricName, "container_blkio_throttled_ops_total"):
+			result.ContainerBlkioThrottledOpsTotal[containerID] = value
+		case strings.HasPrefix(metricName, "container_blkio_throttled_bytes_total"):
+			result.ContainerBlkioThrottledBytesTotal[containerID] = value
 		}
 	}
 	return result, nil
@@ -316,6 +322,10 @@ func (k *KubeClient) CleanupCadvisorData(maxAge time.Duration) {
 // GetCadvisorStats returns statistics about the data held in the calculator.
 func (k *KubeClient) GetCadvisorStats() (containerCount, dataPointCount int) {
 	return k.cadvisorCalc.Stats()
+}
+
+func (k *KubeClient) GetCadvisorThrottleDelta(containerID string, window time.Duration) (float64, float64, error) {
+	return k.cadvisorCalc.GetThrottleDelta(containerID, window)
 }
 
 // ConvertCadvisorToIOStats converts cadvisor metrics to IOStats

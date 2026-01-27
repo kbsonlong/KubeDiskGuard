@@ -12,6 +12,7 @@ import (
 	"KubeDiskGuard/pkg/annotationkeys"
 	"KubeDiskGuard/pkg/cgroup"
 	"KubeDiskGuard/pkg/config"
+	"KubeDiskGuard/pkg/container"
 	"KubeDiskGuard/pkg/kubeclient"
 )
 
@@ -53,15 +54,18 @@ type LimitResult struct {
 
 // LimitStatus 限速状态
 type LimitStatus struct {
-	ContainerID string
-	PodName     string
-	Namespace   string
-	IsLimited   bool
-	TriggeredBy string
-	LimitResult *LimitResult
-	AppliedAt   time.Time
-	LastCheckAt time.Time
-	mu          sync.RWMutex
+	ContainerID   string
+	PodName       string
+	Namespace     string
+	IsLimited     bool
+	TriggeredBy   string
+	LimitResult   *LimitResult
+	AppliedAt     time.Time
+	LastCheckAt   time.Time
+	Throttled     bool
+	ThrottleOps   float64
+	ThrottleBytes float64
+	mu            sync.RWMutex
 }
 
 // ContainerLimit 容器限额结构体
@@ -75,6 +79,7 @@ type SmartLimitManager struct {
 	config          *config.Config
 	kubeClient      kubeclient.IKubeClient
 	cgroupMgr       *cgroup.Manager
+	runtime         container.Runtime
 	history         map[string]*ContainerIOHistory
 	limitStatus     map[string]*LimitStatus    // 限速状态跟踪
 	containerLimits map[string]*ContainerLimit // containerID -> 限额
@@ -83,11 +88,12 @@ type SmartLimitManager struct {
 }
 
 // NewSmartLimitManager 创建智能限速管理器
-func NewSmartLimitManager(config *config.Config, kubeClient kubeclient.IKubeClient, cgroupMgr *cgroup.Manager) *SmartLimitManager {
+func NewSmartLimitManager(config *config.Config, kubeClient kubeclient.IKubeClient, cgroupMgr *cgroup.Manager, rt container.Runtime) *SmartLimitManager {
 	return &SmartLimitManager{
 		config:          config,
 		kubeClient:      kubeClient,
 		cgroupMgr:       cgroupMgr,
+		runtime:         rt,
 		history:         make(map[string]*ContainerIOHistory),
 		limitStatus:     make(map[string]*LimitStatus),
 		stopCh:          make(chan struct{}),
@@ -144,6 +150,77 @@ func (m *SmartLimitManager) monitorLoop() {
 func (m *SmartLimitManager) analyzeAndLimit() {
 	trends := m.AnalyzeAllContainerTrends()
 	m.ApplyLimitIfNeeded(trends)
+	m.detectThrottling()
+}
+
+func (m *SmartLimitManager) detectThrottling() {
+	windows := []time.Duration{15 * time.Second}
+	pods, err := m.kubeClient.ListNodePodsWithKubeletFirst()
+	if err != nil {
+		return
+	}
+	for _, pod := range pods {
+		for _, cs := range pod.Status.ContainerStatuses {
+			if cs.ContainerID == "" || cs.Started == nil || !*cs.Started {
+				continue
+			}
+			id := extractID(cs.ContainerID)
+			if id == "" {
+				continue
+			}
+			opsDelta, bytesDelta, err := m.kubeClient.GetCadvisorThrottleDelta(id, windows[0])
+			if err != nil {
+				continue
+			}
+			avg10, avg60, err := m.runtime.ReadIOPressure(&container.ContainerInfo{ID: id})
+			if err != nil {
+				avg10, avg60 = 0, 0
+			}
+			throttled := (opsDelta > 0 || bytesDelta > 0) || (avg10 > 0 || avg60 > 0)
+			if throttled {
+				updateThrottleMetrics(id, opsDelta, bytesDelta, avg60)
+				st := m.getLimitStatus(id)
+				if st == nil {
+					m.updateLimitStatus(id, pod.Name, pod.Namespace, true, nil)
+					st = m.getLimitStatus(id)
+				}
+				st.mu.Lock()
+				st.Throttled = true
+				st.ThrottleOps = opsDelta
+				st.ThrottleBytes = bytesDelta
+				st.mu.Unlock()
+				_ = m.kubeClient.CreateEvent(pod.Namespace, pod.Name, "Warning", "CgroupIOLimited", "触发cgroup IO限流")
+				m.annotateThrottled(pod.Name, pod.Namespace)
+			}
+		}
+	}
+}
+
+func extractID(k8sID string) string {
+	if k8sID == "" {
+		return ""
+	}
+	if idx := len("docker://"); len(k8sID) > idx && k8sID[:idx] == "docker://" {
+		return k8sID[idx:]
+	}
+	if idx := len("containerd://"); len(k8sID) > idx && k8sID[:idx] == "containerd://" {
+		return k8sID[idx:]
+	}
+	return k8sID
+}
+
+func (m *SmartLimitManager) annotateThrottled(podName, namespace string) {
+	pod, err := m.kubeClient.GetPod(namespace, podName)
+	if err != nil {
+		return
+	}
+	annotations := make(map[string]string)
+	for k, v := range pod.Annotations {
+		annotations[k] = v
+	}
+	annotations[m.config.SmartLimitAnnotationPrefix+"/throttled"] = "true"
+	pod.Annotations = annotations
+	_, _ = m.kubeClient.UpdatePod(pod)
 }
 
 // ApplyLimitIfNeeded 根据分析结果判断并执行限速

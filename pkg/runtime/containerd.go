@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/containerd/containerd"
@@ -120,6 +121,34 @@ func (c *ContainerdRuntime) ResetLimits(container *container.ContainerInfo) erro
 	return c.cgroup.ResetLimits(cgroupPath, majMin)
 }
 
+func (c *ContainerdRuntime) ReadIOPressure(container *container.ContainerInfo) (float64, float64, error) {
+	cgroupPath, err := c.getCgroupPath(container.CgroupParent)
+	if err != nil {
+		return 0, 0, err
+	}
+	p := cgroupPath + "/io.pressure"
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return 0, 0, err
+	}
+	var avg10, avg60 float64
+	lines := strings.Split(string(data), "\n")
+	for _, line := range lines {
+		if strings.HasPrefix(line, "some") {
+			fields := strings.Fields(line)
+			for _, f := range fields {
+				if strings.HasPrefix(f, "avg10=") {
+					fmt.Sscanf(f, "avg10=%f", &avg10)
+				}
+				if strings.HasPrefix(f, "avg60=") {
+					fmt.Sscanf(f, "avg60=%f", &avg60)
+				}
+			}
+			break
+		}
+	}
+	return avg10, avg60, nil
+}
 // getCgroupPath 通过containerd API获取容器的cgroup路径
 func (c *ContainerdRuntime) getCgroupPath(cgroupsPath string) (string, error) {
 	// 根据cgroup版本和systemd管理模式构建完整路径

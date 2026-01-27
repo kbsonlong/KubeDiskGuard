@@ -5,9 +5,12 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"time"
 
 	"KubeDiskGuard/pkg/config"
+	"KubeDiskGuard/pkg/profiler"
 	"KubeDiskGuard/pkg/service"
+	"KubeDiskGuard/pkg/store"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
@@ -52,6 +55,41 @@ func main() {
 	// 打印配置
 	log.Printf("Configuration: %s", cfg.ToJSON())
 
+	// 启动阶段磁盘性能采集与持久化
+	if cfg.ProfilerEnabled {
+		p := profiler.NewManager(profiler.Config{
+			Enabled:        cfg.ProfilerEnabled,
+			TTL:            time.Duration(cfg.ProfilerTTLSeconds) * time.Second,
+			StorePath:      cfg.ProfilerStorePath,
+			MaxLoadAvg:     cfg.ProfilerMaxLoadAvg,
+			MaxSampleSecs:  cfg.ProfilerSampleDuration,
+			MaxFileMB:      cfg.ProfilerMaxFileMB,
+			MountPoint:     cfg.ProfilerMountPoint,
+		})
+		st := store.NewJSONStore(cfg.ProfilerStorePath, time.Duration(cfg.ProfilerTTLSeconds)*time.Second)
+		if baseline, fresh, err := st.Load(); err == nil && fresh {
+			log.Printf("[INFO] Profiler baseline loaded from %s", cfg.ProfilerStorePath)
+			applyBaselineToConfig(cfg, baseline)
+		} else {
+			if err != nil {
+				log.Printf("[WARN] Load baseline error: %v", err)
+			}
+			start := time.Now()
+			profiler.MarkRunStart()
+			if b, err := p.Sample(); err == nil {
+				if err := st.Save(b); err != nil {
+					log.Printf("[WARN] Save baseline failed: %v", err)
+				}
+				applyBaselineToConfig(cfg, b)
+				profiler.MarkDuration(time.Since(start).Seconds())
+				log.Printf("[INFO] Profiler sampled and applied baseline")
+			} else {
+				profiler.MarkSkip()
+				log.Printf("[WARN] Profiler sampling skipped/failed: %v", err)
+			}
+		}
+	}
+
 	// 创建并运行服务
 	svc, err := service.NewKubeDiskGuardService(cfg)
 	if err != nil {
@@ -69,5 +107,35 @@ func main() {
 	// 运行服务
 	if err := svc.Run(); err != nil {
 		log.Fatalf("Service failed: %v", err)
+	}
+}
+
+func applyBaselineToConfig(cfg *config.Config, b profiler.Baseline) {
+	for _, prof := range b.Profiles {
+		ri := int(float64(prof.RandReadIOPS) * 0.7)
+		wi := int(float64(prof.RandWriteIOPS) * 0.7)
+		rb := int(float64(prof.SeqReadBPS) * 0.7)
+		wb := int(float64(prof.SeqWriteBPS) * 0.7)
+		if ri > 0 {
+			if cfg.ContainerReadIOPSLimit == 0 || ri < cfg.ContainerReadIOPSLimit {
+				cfg.ContainerReadIOPSLimit = ri
+			}
+		}
+		if wi > 0 {
+			if cfg.ContainerWriteIOPSLimit == 0 || wi < cfg.ContainerWriteIOPSLimit {
+				cfg.ContainerWriteIOPSLimit = wi
+			}
+		}
+		if rb > 0 {
+			if cfg.ContainerReadBPSLimit == 0 || rb < cfg.ContainerReadBPSLimit {
+				cfg.ContainerReadBPSLimit = rb
+			}
+		}
+		if wb > 0 {
+			if cfg.ContainerWriteBPSLimit == 0 || wb < cfg.ContainerWriteBPSLimit {
+				cfg.ContainerWriteBPSLimit = wb
+			}
+		}
+		break
 	}
 }

@@ -49,6 +49,7 @@ type IKubeClient interface {
 	GetCadvisorStats() (containerCount, dataPointCount int)
 	ConvertCadvisorToIOStats(metrics *cadvisor.CadvisorMetrics, containerID string) *IOStats
 	CreateEvent(namespace, podName, eventType, reason, message string) error
+	GetCadvisorThrottleDelta(containerID string, window time.Duration) (float64, float64, error)
 }
 
 // 确保KubeClient实现IKubeClient

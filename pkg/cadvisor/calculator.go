@@ -16,6 +16,8 @@ type CadvisorMetrics struct {
 	ContainerFSWritesBytesTotal map[string]float64
 	ContainerFSReadsTotal       map[string]float64
 	ContainerFSWritesTotal      map[string]float64
+	ContainerBlkioThrottledOpsTotal   map[string]float64
+	ContainerBlkioThrottledBytesTotal map[string]float64
 }
 
 // MetricPoint 指标数据点
@@ -26,6 +28,8 @@ type MetricPoint struct {
 	WriteIOPS   float64 // 累积写入次数
 	ReadBytes   float64 // 累积读取字节数
 	WriteBytes  float64 // 累积写入字节数
+	ThrottledOps   float64
+	ThrottledBytes float64
 }
 
 // IORate 计算出的IO速率
@@ -230,7 +234,40 @@ func (c *Calculator) GetTotalDataPoints() int {
 func (c *Calculator) Update(metrics *CadvisorMetrics, timestamp time.Time) {
 	for id, val := range metrics.ContainerFSReadsTotal {
 		c.AddMetricPoint(id, timestamp, val, metrics.ContainerFSWritesTotal[id], metrics.ContainerFSReadsBytesTotal[id], metrics.ContainerFSWritesBytesTotal[id])
+		c.mu.Lock()
+		if points, exists := c.history[id]; exists && len(points) > 0 {
+			p := &points[len(points)-1]
+			if metrics.ContainerBlkioThrottledOpsTotal != nil {
+				p.ThrottledOps = metrics.ContainerBlkioThrottledOpsTotal[id]
+			}
+			if metrics.ContainerBlkioThrottledBytesTotal != nil {
+				p.ThrottledBytes = metrics.ContainerBlkioThrottledBytesTotal[id]
+			}
+		}
+		c.mu.Unlock()
 	}
+}
+
+func (c *Calculator) GetThrottleDelta(containerID string, window time.Duration) (float64, float64, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	points, exists := c.history[containerID]
+	if !exists || len(points) < 2 {
+		return 0, 0, fmt.Errorf("insufficient data points for container %s", containerID)
+	}
+	cutoff := time.Now().Add(-window)
+	var windowPoints []MetricPoint
+	for _, point := range points {
+		if point.Timestamp.After(cutoff) {
+			windowPoints = append(windowPoints, point)
+		}
+	}
+	if len(windowPoints) < 2 {
+		return 0, 0, fmt.Errorf("insufficient data points in window for container %s", containerID)
+	}
+	latest := windowPoints[len(windowPoints)-1]
+	earliest := windowPoints[0]
+	return latest.ThrottledOps - earliest.ThrottledOps, latest.ThrottledBytes - earliest.ThrottledBytes, nil
 }
 
 // GetRate is a wrapper for CalculateIORate

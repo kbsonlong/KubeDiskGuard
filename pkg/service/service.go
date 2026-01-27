@@ -100,7 +100,7 @@ func NewKubeDiskGuardService(cfg *config.Config) (*KubeDiskGuardService, error) 
 
 	if cfg.SmartLimitEnabled {
 		cgroupMgr := cgroup.NewManager(cfg.CgroupVersion)
-		service.smartLimit = smartlimit.NewSmartLimitManager(cfg, service.kubeClient, cgroupMgr)
+		service.smartLimit = smartlimit.NewSmartLimitManager(cfg, service.kubeClient, cgroupMgr, service.runtime)
 		log.Printf("Smart limit manager initialized")
 	}
 
@@ -475,7 +475,7 @@ func NewKubeDiskGuardServiceWithKubeClient(cfg *config.Config, kc kubeclient.IKu
 
 	if cfg.SmartLimitEnabled {
 		cgroupMgr := cgroup.NewManager(cfg.CgroupVersion)
-		service.smartLimit = smartlimit.NewSmartLimitManager(cfg, kc, cgroupMgr)
+		service.smartLimit = smartlimit.NewSmartLimitManager(cfg, kc, cgroupMgr, service.runtime)
 	}
 
 	return service, nil

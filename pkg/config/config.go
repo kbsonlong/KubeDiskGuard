@@ -70,6 +70,15 @@ type Config struct {
 	DefaultBPSLimit  int `yaml:"default_bps_limit" json:"default_bps_limit"`
 	MaxIOPSLimit     int `yaml:"max_iops_limit" json:"max_iops_limit"`
 	MaxBPSLimit      int `yaml:"max_bps_limit" json:"max_bps_limit"`
+
+	// 启动阶段性能采集配置
+	ProfilerEnabled       bool    `json:"profiler_enabled"`
+	ProfilerTTLSeconds    int     `json:"profiler_ttl_seconds"`
+	ProfilerStorePath     string  `json:"profiler_store_path"`
+	ProfilerMaxLoadAvg    float64 `json:"profiler_max_loadavg"`
+	ProfilerSampleDuration int    `json:"profiler_sample_duration"`
+	ProfilerMaxFileMB     int     `json:"profiler_max_file_mb"`
+	ProfilerMountPoint    string  `json:"profiler_mount_point"`
 }
 
 // GetDefaultConfig 获取默认配置
@@ -123,6 +132,13 @@ func GetDefaultConfig() *Config {
 		DefaultBPSLimit:               10 * 1024 * 1024, // 10MB
 		MaxIOPSLimit:                  2000,
 		MaxBPSLimit:                   100 * 1024 * 1024, // 100MB
+		ProfilerEnabled:               true,
+		ProfilerTTLSeconds:            24 * 60 * 60,
+		ProfilerStorePath:             "/var/lib/kubediskguard/perf.json",
+		ProfilerMaxLoadAvg:            1.5,
+		ProfilerSampleDuration:        8,
+		ProfilerMaxFileMB:             32,
+		ProfilerMountPoint:            "/data",
 	}
 }
 
@@ -358,6 +374,38 @@ func LoadFromEnv(config *Config) {
 		if interval, err := strconv.Atoi(val); err == nil {
 			config.SmartLimitRemoveCheckInterval = interval
 		}
+	}
+
+	if val := os.Getenv("PROFILER_ENABLED"); val != "" {
+		if enabled, err := strconv.ParseBool(val); err == nil {
+			config.ProfilerEnabled = enabled
+		}
+	}
+	if val := os.Getenv("PROFILER_TTL_SECONDS"); val != "" {
+		if ttl, err := strconv.Atoi(val); err == nil {
+			config.ProfilerTTLSeconds = ttl
+		}
+	}
+	if val := os.Getenv("PROFILER_STORE_PATH"); val != "" {
+		config.ProfilerStorePath = val
+	}
+	if val := os.Getenv("PROFILER_MAX_LOADAVG"); val != "" {
+		if v, err := strconv.ParseFloat(val, 64); err == nil {
+			config.ProfilerMaxLoadAvg = v
+		}
+	}
+	if val := os.Getenv("PROFILER_SAMPLE_DURATION"); val != "" {
+		if d, err := strconv.Atoi(val); err == nil {
+			config.ProfilerSampleDuration = d
+		}
+	}
+	if val := os.Getenv("PROFILER_MAX_FILE_MB"); val != "" {
+		if mb, err := strconv.Atoi(val); err == nil {
+			config.ProfilerMaxFileMB = mb
+		}
+	}
+	if val := os.Getenv("PROFILER_MOUNT_POINT"); val != "" {
+		config.ProfilerMountPoint = val
 	}
 }
 

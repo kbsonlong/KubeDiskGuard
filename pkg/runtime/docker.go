@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/docker/docker/client"
@@ -115,4 +116,33 @@ func (d *DockerRuntime) ResetLimits(container *container.ContainerInfo) error {
 		return fmt.Errorf("failed to get cgroup path for container %s: %v", container.ID, err)
 	}
 	return d.cgroup.ResetLimits(cgroupPath, majMin)
+}
+
+func (d *DockerRuntime) ReadIOPressure(container *container.ContainerInfo) (float64, float64, error) {
+	cgroupPath, err := d.getCgroupPath(container.ID, container.CgroupParent)
+	if err != nil {
+		return 0, 0, err
+	}
+	p := cgroupPath + "/io.pressure"
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return 0, 0, err
+	}
+	var avg10, avg60 float64
+	lines := strings.Split(string(data), "\n")
+	for _, line := range lines {
+		if strings.HasPrefix(line, "some") {
+			fields := strings.Fields(line)
+			for _, f := range fields {
+				if strings.HasPrefix(f, "avg10=") {
+					fmt.Sscanf(f, "avg10=%f", &avg10)
+				}
+				if strings.HasPrefix(f, "avg60=") {
+					fmt.Sscanf(f, "avg60=%f", &avg60)
+				}
+			}
+			break
+		}
+	}
+	return avg10, avg60, nil
 }
