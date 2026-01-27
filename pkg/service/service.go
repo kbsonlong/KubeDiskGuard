@@ -15,6 +15,7 @@ import (
 	"KubeDiskGuard/pkg/detector"
 	"KubeDiskGuard/pkg/kubeclient"
 	"KubeDiskGuard/pkg/runtime"
+	"KubeDiskGuard/pkg/throttle"
 	"KubeDiskGuard/pkg/smartlimit"
 
 	"github.com/docker/go-units"
@@ -57,6 +58,7 @@ type KubeDiskGuardService struct {
 	runtime    container.Runtime
 	kubeClient kubeclient.IKubeClient
 	smartLimit *smartlimit.SmartLimitManager
+	throttle   *throttle.Detector
 }
 
 // NewKubeDiskGuardService 创建KubeDiskGuardService
@@ -103,6 +105,8 @@ func NewKubeDiskGuardService(cfg *config.Config) (*KubeDiskGuardService, error) 
 		service.smartLimit = smartlimit.NewSmartLimitManager(cfg, service.kubeClient, cgroupMgr, service.runtime)
 		log.Printf("Smart limit manager initialized")
 	}
+	// 启动独立的限流检测器（无论智能限速是否开启）
+	service.throttle = throttle.NewDetector(service.kubeClient, service.runtime, cfg.CgroupVersion)
 
 	return service, nil
 }
@@ -344,6 +348,9 @@ func (s *KubeDiskGuardService) Close() error {
 	if s.smartLimit != nil {
 		s.smartLimit.Stop()
 	}
+	if s.throttle != nil {
+		s.throttle.Stop()
+	}
 	if s.runtime != nil {
 		return s.runtime.Close()
 	}
@@ -353,6 +360,9 @@ func (s *KubeDiskGuardService) Close() error {
 func (s *KubeDiskGuardService) Run() error {
 	if s.smartLimit != nil {
 		s.smartLimit.Start()
+	}
+	if s.throttle != nil {
+		s.throttle.Start()
 	}
 
 	pods, err := s.kubeClient.ListNodePodsWithKubeletFirst()
