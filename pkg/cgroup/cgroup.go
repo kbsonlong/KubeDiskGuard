@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Manager cgroup管理器
@@ -19,6 +20,170 @@ func NewManager(version string) *Manager {
 	return &Manager{
 		version: version,
 	}
+}
+
+// ReadIOPressure 读取IO压力（PSI），返回avg10和avg60
+// v1: 读取/proc/pressure/io（节点级回退）
+// v2: 读取<cgroupPath>/io.pressure（容器级）
+func (m *Manager) ReadIOPressure(cgroupPath string) (float64, float64, error) {
+	var avg10, avg60 float64
+	var data []byte
+	var err error
+	if m.version == "v1" {
+		data, err = os.ReadFile("/proc/pressure/io")
+		if err != nil {
+			return 0, 0, err
+		}
+	} else {
+		p := filepath.Join(cgroupPath, "io.pressure")
+		data, err = os.ReadFile(p)
+		if err != nil {
+			return 0, 0, err
+		}
+	}
+	lines := strings.Split(string(data), "\n")
+	for _, line := range lines {
+		if strings.HasPrefix(line, "some") {
+			fields := strings.Fields(line)
+			for _, f := range fields {
+				if strings.HasPrefix(f, "avg10=") {
+					fmt.Sscanf(f, "avg10=%f", &avg10)
+				}
+				if strings.HasPrefix(f, "avg60=") {
+					fmt.Sscanf(f, "avg60=%f", &avg60)
+				}
+			}
+			break
+		}
+	}
+	return avg10, avg60, nil
+}
+
+type V1ThrottleDetail struct {
+	ReadDeltaIOPS   float64
+	WriteDeltaIOPS  float64
+	ReadDeltaBPS    float64
+	WriteDeltaBPS   float64
+	ReadLimitIOPS   float64
+	WriteLimitIOPS  float64
+	ReadLimitBPS    float64
+	WriteLimitBPS   float64
+}
+
+func (m *Manager) DetectV1Throttle(cgroupPath, majMin string, interval time.Duration, epsilon float64) (bool, V1ThrottleDetail, error) {
+	var d V1ThrottleDetail
+	if m.version != "v1" {
+		return false, d, fmt.Errorf("not v1")
+	}
+	sReadOps0, sWriteOps0, sReadBytes0, sWriteBytes0, err := readV1BlkioSnapshot(cgroupPath)
+	if err != nil {
+		return false, d, err
+	}
+	time.Sleep(interval)
+	sReadOps1, sWriteOps1, sReadBytes1, sWriteBytes1, err := readV1BlkioSnapshot(cgroupPath)
+	if err != nil {
+		return false, d, err
+	}
+	riops := readV1Limit(filepath.Join(cgroupPath, "blkio.throttle.read_iops_device"), majMin)
+	wiops := readV1Limit(filepath.Join(cgroupPath, "blkio.throttle.write_iops_device"), majMin)
+	rbps := readV1Limit(filepath.Join(cgroupPath, "blkio.throttle.read_bps_device"), majMin)
+	wbps := readV1Limit(filepath.Join(cgroupPath, "blkio.throttle.write_bps_device"), majMin)
+	d.ReadDeltaIOPS = float64(sReadOps1 - sReadOps0) / interval.Seconds()
+	d.WriteDeltaIOPS = float64(sWriteOps1 - sWriteOps0) / interval.Seconds()
+	d.ReadDeltaBPS = float64(sReadBytes1 - sReadBytes0) / interval.Seconds()
+	d.WriteDeltaBPS = float64(sWriteBytes1 - sWriteBytes0) / interval.Seconds()
+	d.ReadLimitIOPS = float64(riops)
+	d.WriteLimitIOPS = float64(wiops)
+	d.ReadLimitBPS = float64(rbps)
+	d.WriteLimitBPS = float64(wbps)
+	trRead := rbps > 0 && d.ReadDeltaBPS >= float64(rbps)*epsilon
+	trWrite := wbps > 0 && d.WriteDeltaBPS >= float64(wbps)*epsilon
+	tiRead := riops > 0 && d.ReadDeltaIOPS >= float64(riops)*epsilon
+	tiWrite := wiops > 0 && d.WriteDeltaIOPS >= float64(wiops)*epsilon
+	return trRead || trWrite || tiRead || tiWrite, d, nil
+}
+
+func readV1BlkioSnapshot(cgroupPath string) (uint64, uint64, uint64, uint64, error) {
+	opsFile := filepath.Join(cgroupPath, "blkio.throttle.io_serviced_recursive")
+	bytesFile := filepath.Join(cgroupPath, "blkio.throttle.io_service_bytes_recursive")
+	readOps, writeOps, err := parseV1Ops(opsFile)
+	if err != nil {
+		return 0, 0, 0, 0, err
+	}
+	readBytes, writeBytes, err := parseV1Bytes(bytesFile)
+	if err != nil {
+		return 0, 0, 0, 0, err
+	}
+	return readOps, writeOps, readBytes, writeBytes, nil
+}
+
+func parseV1Ops(path string) (uint64, uint64, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return 0, 0, err
+	}
+	var r, w uint64
+	for _, line := range strings.Split(string(b), "\n") {
+		f := strings.Fields(line)
+		if len(f) != 3 {
+			continue
+		}
+		if f[1] == "Read" {
+			if v, err := strconv.ParseUint(f[2], 10, 64); err == nil {
+				r += v
+			}
+		}
+		if f[1] == "Write" {
+			if v, err := strconv.ParseUint(f[2], 10, 64); err == nil {
+				w += v
+			}
+		}
+	}
+	return r, w, nil
+}
+
+func parseV1Bytes(path string) (uint64, uint64, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return 0, 0, err
+	}
+	var r, w uint64
+	for _, line := range strings.Split(string(b), "\n") {
+		f := strings.Fields(line)
+		if len(f) != 3 {
+			continue
+		}
+		if f[1] == "Read" {
+			if v, err := strconv.ParseUint(f[2], 10, 64); err == nil {
+				r += v
+			}
+		}
+		if f[1] == "Write" {
+			if v, err := strconv.ParseUint(f[2], 10, 64); err == nil {
+				w += v
+			}
+		}
+	}
+	return r, w, nil
+}
+
+func readV1Limit(path, majMin string) uint64 {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return 0
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		f := strings.Fields(line)
+		if len(f) != 2 {
+			continue
+		}
+		if f[0] == majMin {
+			if v, err := strconv.ParseUint(f[1], 10, 64); err == nil {
+				return v
+			}
+		}
+	}
+	return 0
 }
 
 // SetIOPSLimit 设置IOPS限制

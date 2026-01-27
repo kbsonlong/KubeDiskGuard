@@ -25,4 +25,5 @@ type Runtime interface {
 	// 解除所有限速
 	ResetLimits(container *ContainerInfo) error
 	ReadIOPressure(container *ContainerInfo) (float64, float64, error)
+	DetectV1Throttle(container *ContainerInfo) (bool, float64, float64, float64, float64, float64, float64, error)
 }

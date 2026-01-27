@@ -3,8 +3,8 @@ package runtime
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
+	"time"
 
 	"github.com/docker/docker/client"
 
@@ -123,26 +123,21 @@ func (d *DockerRuntime) ReadIOPressure(container *container.ContainerInfo) (floa
 	if err != nil {
 		return 0, 0, err
 	}
-	p := cgroupPath + "/io.pressure"
-	data, err := os.ReadFile(p)
+	return d.cgroup.ReadIOPressure(cgroupPath)
+}
+
+func (d *DockerRuntime) DetectV1Throttle(container *container.ContainerInfo) (bool, float64, float64, float64, float64, float64, float64, error) {
+	majMin, err := device.GetMajMin(d.config.DataMount)
 	if err != nil {
-		return 0, 0, err
+		return false, 0, 0, 0, 0, 0, 0, err
 	}
-	var avg10, avg60 float64
-	lines := strings.Split(string(data), "\n")
-	for _, line := range lines {
-		if strings.HasPrefix(line, "some") {
-			fields := strings.Fields(line)
-			for _, f := range fields {
-				if strings.HasPrefix(f, "avg10=") {
-					fmt.Sscanf(f, "avg10=%f", &avg10)
-				}
-				if strings.HasPrefix(f, "avg60=") {
-					fmt.Sscanf(f, "avg60=%f", &avg60)
-				}
-			}
-			break
-		}
+	cgroupPath, err := d.getCgroupPath(container.ID, container.CgroupParent)
+	if err != nil {
+		return false, 0, 0, 0, 0, 0, 0, err
 	}
-	return avg10, avg60, nil
+	ok, detail, err := d.cgroup.DetectV1Throttle(cgroupPath, majMin, time.Second, 0.9)
+	if err != nil {
+		return false, 0, 0, 0, 0, 0, 0, err
+	}
+	return ok, detail.ReadDeltaBPS, detail.WriteDeltaBPS, detail.ReadLimitBPS, detail.WriteLimitBPS, detail.ReadDeltaIOPS, detail.WriteDeltaIOPS, nil
 }

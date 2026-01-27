@@ -168,6 +168,29 @@ func (m *SmartLimitManager) detectThrottling() {
 			if id == "" {
 				continue
 			}
+			if m.config.CgroupVersion == "v1" {
+				ci, err := m.runtime.GetContainerByID(id)
+				if err != nil {
+					continue
+				}
+				ok, rDeltaBPS, wDeltaBPS, _, _, rDeltaIOPS, wDeltaIOPS, err := m.runtime.DetectV1Throttle(ci)
+				if err == nil && ok {
+					updateThrottleMetrics(id, rDeltaIOPS+wDeltaIOPS, rDeltaBPS+wDeltaBPS, 0)
+					st := m.getLimitStatus(id)
+					if st == nil {
+						m.updateLimitStatus(id, pod.Name, pod.Namespace, true, nil)
+						st = m.getLimitStatus(id)
+					}
+					st.mu.Lock()
+					st.Throttled = true
+					st.ThrottleOps = rDeltaIOPS + wDeltaIOPS
+					st.ThrottleBytes = rDeltaBPS + wDeltaBPS
+					st.mu.Unlock()
+					_ = m.kubeClient.CreateEvent(pod.Namespace, pod.Name, "Warning", "CgroupIOLimited", "触发cgroup v1 IO限流")
+					m.annotateThrottled(pod.Name, pod.Namespace)
+					continue
+				}
+			}
 			opsDelta, bytesDelta, err := m.kubeClient.GetCadvisorThrottleDelta(id, windows[0])
 			if err != nil {
 				continue
