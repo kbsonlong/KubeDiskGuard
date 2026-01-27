@@ -284,6 +284,18 @@ func (m *SmartLimitManager) applyLimitForContainer(containerID string, trend *IO
 		return
 	}
 
+	// 观察模式：只触发事件，不做实际处理
+	if m.config.SmartLimitObserveOnly {
+		reason := ""
+		if limitResult != nil {
+			reason = limitResult.Reason
+		} else {
+			reason = m.buildTriggerReason("graded", trend.ReadIOPS15m, trend.WriteIOPS15m, trend.ReadBPS15m, trend.WriteBPS15m)
+		}
+		_ = m.kubeClient.CreateEvent(history.Namespace, history.PodName, "Normal", "SmartLimitObserved", "观察模式触发: "+reason)
+		return
+	}
+
 	// 3. 需要限速，且已限速，判断是否需要更新
 	if limitStatus != nil && limitStatus.IsLimited {
 		if !m.shouldUpdateLimit(limitStatus, limitResult) {

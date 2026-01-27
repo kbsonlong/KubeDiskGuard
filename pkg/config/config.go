@@ -72,13 +72,15 @@ type Config struct {
 	MaxBPSLimit      int `yaml:"max_bps_limit" json:"max_bps_limit"`
 
 	// 启动阶段性能采集配置
-	ProfilerEnabled       bool    `json:"profiler_enabled"`
-	ProfilerTTLSeconds    int     `json:"profiler_ttl_seconds"`
-	ProfilerStorePath     string  `json:"profiler_store_path"`
-	ProfilerMaxLoadAvg    float64 `json:"profiler_max_loadavg"`
-	ProfilerSampleDuration int    `json:"profiler_sample_duration"`
-	ProfilerMaxFileMB     int     `json:"profiler_max_file_mb"`
-	ProfilerMountPoint    string  `json:"profiler_mount_point"`
+	ProfilerEnabled        bool    `json:"profiler_enabled"`
+	ProfilerTTLSeconds     int     `json:"profiler_ttl_seconds"`
+	ProfilerStorePath      string  `json:"profiler_store_path"`
+	ProfilerMaxLoadAvg     float64 `json:"profiler_max_loadavg"`
+	ProfilerSampleDuration int     `json:"profiler_sample_duration"`
+	ProfilerMaxFileMB      int     `json:"profiler_max_file_mb"`
+	ProfilerMountPoint     string  `json:"profiler_mount_point"`
+
+	SmartLimitObserveOnly bool `json:"smart_limit_observe_only"`
 }
 
 // GetDefaultConfig 获取默认配置
@@ -139,6 +141,7 @@ func GetDefaultConfig() *Config {
 		ProfilerSampleDuration:        8,
 		ProfilerMaxFileMB:             32,
 		ProfilerMountPoint:            "/data",
+		SmartLimitObserveOnly:         false,
 	}
 }
 
@@ -406,6 +409,11 @@ func LoadFromEnv(config *Config) {
 	}
 	if val := os.Getenv("PROFILER_MOUNT_POINT"); val != "" {
 		config.ProfilerMountPoint = val
+	}
+	if val := os.Getenv("SMART_LIMIT_OBSERVE_ONLY"); val != "" {
+		if b, err := strconv.ParseBool(val); err == nil {
+			config.SmartLimitObserveOnly = b
+		}
 	}
 }
 
