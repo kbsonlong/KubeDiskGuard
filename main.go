@@ -1,10 +1,13 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"KubeDiskGuard/pkg/api"
 	"KubeDiskGuard/pkg/config"
@@ -35,7 +38,7 @@ func main() {
 	// 创建路由器
 	router := mux.NewRouter()
 
-	// 添加 Prometheus metrics 和健康检查
+	// 添加 Prometheus metrics 和存活检查
 	router.Handle("/metrics", promhttp.Handler())
 	router.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -65,9 +68,10 @@ func main() {
 		log.Fatalf("Failed to create IOPS limit service: %v", err)
 	}
 
-	// 创建并注册 API 服务器
-	apiServer := api.NewAPIServer(svc.GetSmartLimitManager())
+	// 创建并注册运维 API；readiness 由最近一次全量对账决定。
+	apiServer := api.NewAPIServer(svc)
 	apiServer.RegisterRoutes(router)
+	router.HandleFunc("/readyz", apiServer.HandleReadiness)
 	log.Printf("[INFO] API routes registered")
 
 	if *resetAll {
@@ -78,8 +82,12 @@ func main() {
 		os.Exit(0)
 	}
 
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	defer svc.Close()
+
 	// 运行服务
-	if err := svc.Run(); err != nil {
+	if err := svc.Run(ctx); err != nil {
 		log.Fatalf("Service failed: %v", err)
 	}
 }

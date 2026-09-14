@@ -60,3 +60,4 @@ vendor/
 *.bak
 *.backup 
 test_api.sh
+docs/1.md

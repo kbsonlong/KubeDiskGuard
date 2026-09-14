@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"time"
 
 	"KubeDiskGuard/pkg/cadvisor"
 	"KubeDiskGuard/pkg/config"
@@ -41,18 +40,6 @@ type KubeClient struct {
 type IKubeClient interface {
 	ListNodePodsWithKubeletFirst() ([]corev1.Pod, error)
 	WatchNodePods() (watch.Interface, error)
-	GetPod(namespace, name string) (*corev1.Pod, error)
-	UpdatePod(pod *corev1.Pod) (*corev1.Pod, error)
-	GetNodeSummary() (*NodeSummary, error)
-	GetCadvisorMetrics() (string, error)
-	TestKubeletConnection() error
-	ParseCadvisorMetrics(metrics string) (*cadvisor.CadvisorMetrics, error)
-	GetCadvisorIORate(containerID string, window time.Duration) (*cadvisor.IORate, error)
-	GetCadvisorAverageIORate(containerID string, windows []time.Duration) (*cadvisor.IORate, error)
-	CleanupCadvisorData(maxAge time.Duration)
-	GetCadvisorStats() (containerCount, dataPointCount int)
-	ConvertCadvisorToIOStats(metrics *cadvisor.CadvisorMetrics, containerID string) *IOStats
-	CreateEvent(namespace, podName, eventType, reason, message string) error
 }
 
 // 确保KubeClient实现IKubeClient
@@ -63,40 +50,34 @@ func NewKubeClientWithConfig(nodeName, kubeconfigPath string, cfg *config.Config
 	if nodeName == "" {
 		return nil, fmt.Errorf("nodeName is required, please set NODE_NAME env")
 	}
-	
+
 	var restConfig *rest.Config
 	var clientset *kubernetes.Clientset
 	var err error
 
-	// 当使用 kubelet API 模式时，跳过 Kubernetes 客户端创建
-	if !cfg.SmartLimitUseKubeletAPI {
-		if kubeconfigPath != "" {
-			restConfig, err = clientcmd.BuildConfigFromFlags("", kubeconfigPath)
-			if err != nil {
-				return nil, fmt.Errorf("failed to load kubeconfig: %v", err)
-			}
-		} else {
-			restConfig, err = rest.InClusterConfig()
-			if err != nil {
-				// fallback to KUBECONFIG env
-				if envPath := os.Getenv("KUBECONFIG"); envPath != "" {
-					restConfig, err = clientcmd.BuildConfigFromFlags("", envPath)
-					if err != nil {
-						return nil, fmt.Errorf("failed to load kubeconfig from env: %v", err)
-					}
-				} else {
-					return nil, fmt.Errorf("failed to get in-cluster config: %v", err)
-				}
-			}
-		}
-
-		clientset, err = kubernetes.NewForConfig(restConfig)
+	// 基础限速依赖 API Server 的 Pod watch；kubelet 只作为本机 Pod 列表的优先数据源。
+	if kubeconfigPath != "" {
+		restConfig, err = clientcmd.BuildConfigFromFlags("", kubeconfigPath)
 		if err != nil {
-			return nil, fmt.Errorf("failed to create kubernetes client: %v", err)
+			return nil, fmt.Errorf("failed to load kubeconfig: %v", err)
 		}
 	} else {
-		// 使用 kubelet API 模式，不需要 Kubernetes 客户端
-		fmt.Printf("Using kubelet API mode, skipping Kubernetes client creation\n")
+		restConfig, err = rest.InClusterConfig()
+		if err != nil {
+			if envPath := os.Getenv("KUBECONFIG"); envPath != "" {
+				restConfig, err = clientcmd.BuildConfigFromFlags("", envPath)
+				if err != nil {
+					return nil, fmt.Errorf("failed to load kubeconfig from env: %v", err)
+				}
+			} else {
+				return nil, fmt.Errorf("failed to get in-cluster config: %v", err)
+			}
+		}
+	}
+
+	clientset, err = kubernetes.NewForConfig(restConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create kubernetes client: %v", err)
 	}
 
 	// 使用配置参数，如果为空则使用默认值
@@ -121,7 +102,7 @@ func NewKubeClientWithConfig(nodeName, kubeconfigPath string, cfg *config.Config
 
 	// 证书配置
 	var clientCertPath, clientKeyPath string
-	if !cfg.SmartLimitUseKubeletAPI && restConfig != nil {
+	if restConfig != nil {
 		// 从 kubeconfig 中提取客户端证书信息
 		if restConfig.CertFile != "" && restConfig.KeyFile != "" {
 			clientCertPath = restConfig.CertFile
@@ -315,62 +296,4 @@ func (k *KubeClient) WatchNodePods() (watch.Interface, error) {
 		FieldSelector: fieldSelector,
 		Watch:         true,
 	})
-}
-
-// GetPod 获取指定命名空间和名称的Pod
-func (k *KubeClient) GetPod(namespace, name string) (*corev1.Pod, error) {
-	if k.Clientset == nil {
-		return nil, fmt.Errorf("kubernetes clientset is nil, cannot get pod")
-	}
-	pod, err := k.Clientset.CoreV1().Pods(namespace).Get(context.TODO(), name, metav1.GetOptions{})
-	if err != nil {
-		return nil, fmt.Errorf("failed to get pod: %v", err)
-	}
-	return pod, nil
-}
-
-// UpdatePod 更新指定Pod
-func (k *KubeClient) UpdatePod(pod *corev1.Pod) (*corev1.Pod, error) {
-	if k.Clientset == nil {
-		return nil, fmt.Errorf("kubernetes clientset is nil, cannot update pod")
-	}
-	pod, err := k.Clientset.CoreV1().Pods(pod.Namespace).Update(context.TODO(), pod, metav1.UpdateOptions{})
-	if err != nil {
-		return nil, fmt.Errorf("failed to update pod: %v", err)
-	}
-	return pod, nil
-}
-
-// CreateEvent 在指定 Pod 上创建事件
-func (k *KubeClient) CreateEvent(namespace, podName, eventType, reason, message string) error {
-	if k.Clientset == nil {
-		return fmt.Errorf("kubernetes clientset is nil, cannot create event")
-	}
-	ref, err := k.Clientset.CoreV1().Pods(namespace).Get(context.TODO(), podName, metav1.GetOptions{})
-	if err != nil {
-		return err
-	}
-	event := &corev1.Event{
-		ObjectMeta: metav1.ObjectMeta{
-			GenerateName: podName + "-smartlimit-",
-			Namespace:    namespace,
-		},
-		InvolvedObject: corev1.ObjectReference{
-			Kind:       "Pod",
-			Namespace:  namespace,
-			Name:       podName,
-			UID:        ref.UID,
-			APIVersion: "v1",
-		},
-		Reason:  reason,
-		Message: message,
-		Source: corev1.EventSource{
-			Component: "smartlimit-controller",
-		},
-		FirstTimestamp: metav1.Now(),
-		LastTimestamp:  metav1.Now(),
-		Type:           eventType,
-	}
-	_, err = k.Clientset.CoreV1().Events(namespace).Create(context.TODO(), event, metav1.CreateOptions{})
-	return err
 }

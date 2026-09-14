@@ -89,20 +89,39 @@ func TestParseAnnotations(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			svcConfig := &config.Config{
-				ContainerReadIOPSLimit:     defaultReadIOPS,
-				ContainerWriteIOPSLimit:    defaultWriteIOPS,
-				ContainerReadBPSLimit:      defaultReadBPS,
-				ContainerWriteBPSLimit:     defaultWriteBPS,
-				SmartLimitAnnotationPrefix: tc.prefix,
+				ContainerReadIOPSLimit:  defaultReadIOPS,
+				ContainerWriteIOPSLimit: defaultWriteIOPS,
+				ContainerReadBPSLimit:   defaultReadBPS,
+				ContainerWriteBPSLimit:  defaultWriteBPS,
+				AnnotationPrefix:        tc.prefix,
 			}
 
-			readIops, writeIops := ParseIopsLimitFromAnnotations(tc.annotations, svcConfig.ContainerReadIOPSLimit, svcConfig.ContainerWriteIOPSLimit, svcConfig.SmartLimitAnnotationPrefix)
+			readIops, writeIops := ParseIopsLimitFromAnnotations(tc.annotations, svcConfig.ContainerReadIOPSLimit, svcConfig.ContainerWriteIOPSLimit, svcConfig.AnnotationPrefix)
 			assert.Equal(t, tc.expectedReadIops, readIops, "Read IOPS should match")
 			assert.Equal(t, tc.expectedWriteIops, writeIops, "Write IOPS should match")
 
-			readBps, writeBps := ParseBpsLimitFromAnnotations(tc.annotations, svcConfig.ContainerReadBPSLimit, svcConfig.ContainerWriteBPSLimit, svcConfig.SmartLimitAnnotationPrefix)
+			readBps, writeBps := ParseBpsLimitFromAnnotations(tc.annotations, svcConfig.ContainerReadBPSLimit, svcConfig.ContainerWriteBPSLimit, svcConfig.AnnotationPrefix)
 			assert.Equal(t, tc.expectedReadBps, readBps, "Read BPS should match")
 			assert.Equal(t, tc.expectedWriteBps, writeBps, "Write BPS should match")
+		})
+	}
+}
+
+func TestPolicySource(t *testing.T) {
+	prefix := "kubediskguard.io"
+	tests := []struct {
+		name        string
+		annotations map[string]string
+		want        string
+	}{
+		{name: "default", annotations: map[string]string{}, want: "default"},
+		{name: "legacy", annotations: map[string]string{"nvme-iops": "100"}, want: "legacy_annotation"},
+		{name: "annotation wins", annotations: map[string]string{"nvme-iops": "100", prefix + "/read-iops": "50"}, want: "annotation"},
+		{name: "explicit reset", annotations: map[string]string{prefix + "/removed": "true"}, want: "annotation"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, PolicySource(tt.annotations, prefix))
 		})
 	}
 }
